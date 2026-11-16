@@ -1,0 +1,26 @@
+[project]
+name = "clipper"
+version = "0.1.0"
+description = "Local web app that turns YouTube videos into vertical clips"
+requires-python = ">=3.12"
+dependencies = [
+    "openai>=1.0.0",
+    "yt-dlp[default,curl-cffi]>=2026.8.19",
+    "opencv-python>=4.8.0",
+    "numpy>=1.24.0",
+    "Pillow>=10.0.0",
+    "mediapipe>=0.10.0",
+    "requests>=2.31.0",
+    "fastapi",
+    "uvicorn",
+]
+
+[dependency-groups]
+dev = ["pytest", "httpx"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
