@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Clipper</title>
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <header class="masthead">
+    <p class="wordmark">Clipper <span class="wordmark-tag">runs on this Mac</span></p>
+    <button type="button" class="quiet-button" id="settings-toggle" aria-expanded="false" aria-controls="settings">AI settings</button>
+  </header>
+
+  <main>
+    <section class="panel settings" id="settings" aria-labelledby="settings-heading" hidden>
+      <h2 id="settings-heading">AI settings</h2>
+      <p class="hint">Any OpenAI-compatible provider works. The key is stored only in <code>data/settings.json</code> on this Mac.</p>
+      <form id="settings-form" class="field-grid">
+        <label class="field field-wide">
+          <span>Endpoint</span>
+          <input name="base_url" type="url" list="endpoint-presets" required autocomplete="off" spellcheck="false">
+          <datalist id="endpoint-presets">
+            <option value="https://api.openai.com/v1">OpenAI</option>
+            <option value="https://generativelanguage.googleapis.com/v1beta/openai">Google Gemini</option>
+            <option value="https://api.groq.com/openai/v1">Groq</option>
+          </datalist>
+        </label>
+        <label class="field">
+          <span>Model</span>
+          <input name="model" type="text" required autocomplete="off" spellcheck="false" placeholder="model name from your provider">
+        </label>
+        <label class="field">
+          <span>API key <small id="key-state"></small></span>
+          <input name="api_key" type="password" autocomplete="off" spellcheck="false" placeholder="leave empty to keep the saved key">
+        </label>
+        <div class="field-actions">
+          <button type="submit" class="solid-button">Save settings</button>
+          <p class="hint" id="settings-status" role="status"></p>
+        </div>
+      </form>
+    </section>
+
+    <section class="source" aria-labelledby="source-heading">
+      <h1 id="source-heading">Cut the moments<br>viewers replay.</h1>
+      <form id="find-form" novalidate>
+        <div class="link-bar">
+          <label class="visually-hidden" for="url">YouTube link</label>
+          <input id="url" name="url" type="url" required inputmode="url" autocomplete="off" spellcheck="false" placeholder="Paste a YouTube link">
+          <button type="submit" class="solid-button" id="find-button">Find moments</button>
+        </div>
+        <div class="field-grid options">
+          <label class="field">
+            <span>Clips</span>
+            <input name="num_clips" type="number" min="1" max="15" value="5" required>
+          </label>
+          <label class="field">
+            <span>Shortest <small>seconds</small></span>
+            <input name="min_seconds" type="number" min="5" max="600" value="20" required>
+          </label>
+          <label class="field">
+            <span>Longest <small>seconds</small></span>
+            <input name="max_seconds" type="number" min="10" max="900" value="60" required>
+          </label>
+          <label class="field">
+            <span>Title language</span>
+            <select name="output_language">
+              <option value="auto">Same as the video</option>
+              <option value="en">English</option>
+              <option value="hi">Hindi</option>
+              <option value="es">Spanish</option>
+              <option value="fr">French</option>
+              <option value="de">German</option>
+              <option value="pt">Portuguese</option>
+              <option value="id">Indonesian</option>
+              <option value="ar">Arabic</option>
+              <option value="ja">Japanese</option>
+              <option value="ko">Korean</option>
+            </select>
+          </label>
+          <label class="field field-wide">
+            <span>Direction <small>optional</small></span>
+            <textarea name="direction" rows="2" maxlength="1000" placeholder="e.g. only 10:00 - 25:00, focus on pricing advice, skip the sponsor read"></textarea>
+          </label>
+        </div>
+      </form>
+      <p class="alert" id="alert" role="alert" hidden></p>
+    </section>
+
+    <section class="panel progress" id="progress" aria-labelledby="progress-heading" hidden>
+      <div class="progress-head">
+        <h2 id="progress-heading" role="status">Working</h2>
+        <p class="timecode" id="elapsed">0:00</p>
+      </div>
+      <pre class="log" id="log" tabindex="0" aria-label="Progress log"></pre>
+    </section>
+
+    <section class="moments" id="moments" aria-labelledby="video-title" hidden>
+      <div class="moments-head">
+        <p class="eyebrow" id="video-channel"></p>
+        <h2 id="video-title"></h2>
+      </div>
+      <figure class="graph">
+        <svg id="graph" viewBox="0 0 1000 240" preserveAspectRatio="none" role="img" aria-labelledby="graph-caption"></svg>
+        <div class="graph-axis" id="graph-axis" aria-hidden="true"></div>
+        <figcaption id="graph-caption"></figcaption>
+      </figure>
+
+      <ol class="highlights" id="highlights"></ol>
+
+      <form class="render-bar" id="render-form">
+        <fieldset class="segmented">
+          <legend>Framing</legend>
+          <label><input type="radio" name="reframe" value="face" checked><span>Follow face</span></label>
+          <label><input type="radio" name="reframe" value="blur"><span>Blurred fill</span></label>
+          <label><input type="radio" name="reframe" value="bars"><span>Black bars</span></label>
+        </fieldset>
+        <fieldset class="toggles">
+          <legend>Add</legend>
+          <label><input type="checkbox" name="captions" checked><span>Captions</span></label>
+          <label><input type="checkbox" name="hook" checked><span>Hook text</span></label>
+          <label><input type="checkbox" name="credit"><span>Channel credit</span></label>
+          <label title="Put an image at data/logo.png to enable"><input type="checkbox" name="logo" id="logo-toggle" disabled><span>Logo</span></label>
+        </fieldset>
+        <button type="submit" class="solid-button" id="render-button" disabled>Make clips</button>
+      </form>
+    </section>
+
+    <section class="clips" id="clips" aria-labelledby="clips-heading" hidden>
+      <h2 id="clips-heading">Clips</h2>
+      <ul class="clip-strip" id="clip-strip"></ul>
+    </section>
+  </main>
+
+  <template id="highlight-template">
+    <li class="highlight">
+      <label class="highlight-pick">
+        <input type="checkbox">
+        <span class="visually-hidden">Make this clip</span>
+      </label>
+      <div class="highlight-time">
+        <p class="timecode"></p>
+        <p class="highlight-length"></p>
+      </div>
+      <div class="highlight-body">
+        <h3></h3>
+        <p class="highlight-hook"></p>
+        <p class="highlight-description"></p>
+      </div>
+      <div class="highlight-meta">
+        <p class="replay" hidden><span class="replay-bar"><span></span></span><span class="replay-label"></span></p>
+        <a class="text-link" target="_blank" rel="noopener noreferrer">Watch this moment</a>
+      </div>
+    </li>
+  </template>
+
+  <template id="clip-template">
+    <li class="clip">
+      <video controls playsinline preload="metadata"></video>
+      <h3></h3>
+      <p class="clip-description"></p>
+      <div class="clip-actions">
+        <button type="button" class="quiet-button" data-copy="title">Copy title</button>
+        <button type="button" class="quiet-button" data-copy="description">Copy description</button>
+        <a class="solid-button">Download</a>
+      </div>
+    </li>
+  </template>
+</body>
+</html>

@@ -29,6 +29,17 @@ DEFAULT_BASE_URL = "https://api.openai.com/v1"
 HOOK_SECONDS = 4.0
 MAX_DIRECTION_CHARS = 1000
 
+SECURITY_HEADERS = {
+    # Everything the page needs is served from here; nothing loads from the network.
+    "Content-Security-Policy": (
+        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+        "media-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+    ),
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+}
+
 app = FastAPI(title="Clipper", docs_url=None, redoc_url=None)
 
 
@@ -53,7 +64,10 @@ async def local_requests_only(request: Request, call_next):
     origin_host = (urlparse(origin).hostname or "").lower() if origin else None
     if host not in LOCAL_HOSTS or (origin is not None and origin_host not in LOCAL_HOSTS):
         return JSONResponse({"detail": "This server only answers its own local page."}, status_code=403)
-    return await call_next(request)
+    response = await call_next(request)
+    for header, value in SECURITY_HEADERS.items():
+        response.headers.setdefault(header, value)
+    return response
 
 
 # ---------- settings ----------
