@@ -134,6 +134,13 @@ def get_ffmpeg_path() -> str:
     2. ffmpeg in system PATH
     3. Default "ffmpeg" command
     """
+    # An explicit override wins. PATH order cannot be relied on: the Deno dir is
+    # prepended at runtime, which on macOS puts Homebrew's default ffmpeg (built
+    # without libass, so no caption burn-in) ahead of any other build.
+    override = os.environ.get("CLIPPER_FFMPEG")
+    if override and Path(override).exists():
+        return override
+
     exe_name = "ffmpeg.exe" if sys.platform.startswith("win") else "ffmpeg"
     bundled = _find_bundled(f"ffmpeg/{exe_name}")
     if bundled:
