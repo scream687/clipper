@@ -41,7 +41,6 @@
 
   --duration-fast: 140ms;
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
-  --shadow-panel: 0 1px 0 oklch(100% 0 0 / 0.04) inset, 0 18px 40px -24px oklch(0% 0 0 / 0.8);
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -58,6 +57,9 @@ body {
 }
 
 h1, h2, h3, p, ol, ul, figure, fieldset { margin: 0; padding: 0; }
+h1, h2, h3 { text-wrap: balance; }
+html { scrollbar-color: var(--color-line) var(--color-bg); }
+::selection { background: var(--color-signal); color: var(--color-signal-ink); }
 ol, ul { list-style: none; }
 fieldset { border: 0; min-width: 0; }
 [hidden] { display: none !important; }
@@ -81,7 +83,7 @@ fieldset { border: 0; min-width: 0; }
 .wordmark-tag {
   display: none; margin-left: var(--space-2); padding: 0.125rem var(--space-2);
   border: 1px solid var(--color-line); border-radius: var(--radius-pill);
-  font: 500 var(--text-small) var(--font-mono); color: var(--color-muted);
+  font: 500 var(--text-small) var(--font-text); color: var(--color-muted);
 }
 
 main { padding: 0 var(--gutter) var(--space-section); max-width: 78rem; margin: 0 auto; }
@@ -114,7 +116,7 @@ input, select, textarea {
   width: 100%; min-height: 2.75rem; padding: var(--space-2) var(--space-3);
   background: var(--color-bg); color: var(--color-text);
   border: 1px solid var(--color-line); border-radius: var(--radius-control);
-  font: var(--text-base) var(--font-text);
+  font: var(--text-base) var(--font-text); caret-color: var(--color-signal);
   transition: border-color var(--duration-fast);
 }
 input:hover, select:hover, textarea:hover { border-color: var(--color-muted); }
@@ -136,7 +138,6 @@ code { font: var(--text-small) var(--font-mono); color: var(--color-text); }
 .panel {
   padding: var(--space-5); background: var(--color-surface);
   border: 1px solid var(--color-line); border-radius: var(--radius-panel);
-  box-shadow: var(--shadow-panel);
 }
 .panel h2 { font-size: var(--text-lead); margin-bottom: var(--space-2); }
 .settings .field-grid { margin-top: var(--space-4); }
@@ -155,7 +156,7 @@ code { font: var(--text-small) var(--font-mono); color: var(--color-text); }
 .alert {
   margin-top: var(--space-4); padding: var(--space-3) var(--space-4);
   background: var(--color-danger-dim); color: var(--color-text);
-  border-left: 3px solid var(--color-danger); border-radius: var(--radius-control);
+  border: 1px solid var(--color-danger); border-radius: var(--radius-control);
   white-space: pre-wrap;
 }
 
@@ -172,16 +173,13 @@ code { font: var(--text-small) var(--font-mono); color: var(--color-text); }
 
 /* ---------- moments ---------- */
 
-.eyebrow { font: 500 var(--text-small) var(--font-mono); color: var(--color-muted); text-transform: uppercase; letter-spacing: 0.08em; }
-.moments-head h2 { font-size: var(--text-title); line-height: 1.15; letter-spacing: -0.02em; margin-top: var(--space-1); max-width: 34ch; }
+.moments-head h2 { font-size: var(--text-title); line-height: 1.15; letter-spacing: -0.02em; max-width: 34ch; }
+.moments-head .hint { margin-top: var(--space-2); }
 
 .graph {
   margin-top: var(--space-5); padding: var(--space-4) var(--space-4) var(--space-3);
-  background:
-    repeating-linear-gradient(90deg, oklch(100% 0 0 / 0.035) 0 1px, transparent 1px 5%),
-    var(--color-surface);
+  background: var(--color-surface);
   border: 1px solid var(--color-line); border-radius: var(--radius-panel);
-  box-shadow: var(--shadow-panel);
 }
 .graph svg { display: block; width: 100%; height: clamp(8rem, 5rem + 12vw, 15rem); overflow: visible; }
 .graph-area { fill: oklch(72% 0.02 80 / 0.22); }
@@ -189,6 +187,7 @@ code { font: var(--text-small) var(--font-mono); color: var(--color-text); }
 .graph-band { fill: var(--color-signal-dim); stroke: var(--color-signal); stroke-width: 1; vector-effect: non-scaling-stroke; cursor: pointer; transition: fill var(--duration-fast); }
 .graph-band:hover, .graph-band.is-active { fill: oklch(88% 0.18 98 / 0.34); }
 .graph-band.is-picked { fill: oklch(88% 0.18 98 / 0.5); }
+.graph-grid { stroke: var(--color-line); stroke-width: 1; vector-effect: non-scaling-stroke; }
 .graph-empty { stroke: var(--color-line); stroke-width: 1.5; stroke-dasharray: 4 6; vector-effect: non-scaling-stroke; }
 .graph-axis { display: flex; justify-content: space-between; margin-top: var(--space-2); font: var(--text-small) var(--font-mono); color: var(--color-muted); font-variant-numeric: tabular-nums; }
 .graph figcaption { margin-top: var(--space-2); color: var(--color-muted); font-size: var(--text-small); }

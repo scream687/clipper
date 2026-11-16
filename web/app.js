@@ -148,7 +148,8 @@ async function watchJob(jobId, startedAt = Date.now()) {
   await loadSession(job.result.session_id);
   el("progress").hidden = true;
   const target = job.kind === "render" ? el("clips") : el("moments");
-  target.scrollIntoView({ behavior: "smooth", block: "start" });
+  const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  target.scrollIntoView({ behavior: calm ? "auto" : "smooth", block: "start" });
 }
 
 async function beginJob(path, payload) {
@@ -251,7 +252,12 @@ function drawGraph() {
   const base = hasGraph
     ? replayCurve(length)
     : [svgNode("line", { class: "graph-empty", x1: 0, y1: middle, x2: GRAPH.width, y2: middle })];
-  el("graph").replaceChildren(...base, ...session.highlights.map((h) => pickBand(h, length)));
+  // Gridlines sit under the axis labels, so each one marks a labelled time.
+  const grid = Array.from({ length: AXIS_STEPS - 1 }, (_, step) => {
+    const x = (GRAPH.width * (step + 1)) / AXIS_STEPS;
+    return svgNode("line", { class: "graph-grid", x1: x, y1: 0, x2: x, y2: GRAPH.height });
+  });
+  el("graph").replaceChildren(...grid, ...base, ...session.highlights.map((h) => pickBand(h, length)));
 
   const ticks = Array.from({ length: AXIS_STEPS + 1 }, (_, step) => {
     const tick = document.createElement("span");
@@ -350,8 +356,8 @@ function clipCard(highlight, stamp) {
 }
 
 function showSession() {
-  el("video-channel").textContent = session.video.channel;
   el("video-title").textContent = session.video.title;
+  el("video-meta").textContent = [session.video.channel, clock(videoLength())].filter(Boolean).join(" · ");
   drawGraph();
   el("highlights").replaceChildren(...session.highlights.map(highlightRow));
 
