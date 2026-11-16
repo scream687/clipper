@@ -12,13 +12,13 @@ from .json3_parser import find_orig_caption_code, parse_json3_words
 LogFn = Callable[[str], None]
 
 
-def _base_ydl_opts(cookies_path: str, deno_path: str | None, ffmpeg_path: str | None) -> dict[str, Any]:
+def _base_ydl_opts(cookies_path: str | None, deno_path: str | None, ffmpeg_path: str | None) -> dict[str, Any]:
     """Shared yt-dlp options (cookies + deno + ffmpeg) for subtitle work."""
     opts: dict[str, Any] = {
         "skip_download": True,
         "quiet": True,
         "no_warnings": False,
-        "cookiefile": str(cookies_path),
+        "cookiefile": str(cookies_path) if cookies_path else None,
     }
     if deno_path and Path(deno_path).exists():
         opts["js_runtimes"] = {"deno": {"path": deno_path}}
@@ -168,7 +168,7 @@ def download_subtitle_only(
         "outtmpl": str(temp_dir / "source.%(ext)s"),
         "quiet": True,
         "no_warnings": False,
-        "cookiefile": str(cookies_path),
+        "cookiefile": str(cookies_path) if cookies_path else None,
     }
 
     if deno_path and Path(deno_path).exists():

@@ -84,7 +84,7 @@ def _get_subtitles_module(url: str, cookies_path: str | None) -> dict[str, Any]:
             "skip_download": True,
             "quiet": False,
             "no_warnings": False,
-            "cookiefile": str(cookies_path),
+            "cookiefile": str(cookies_path) if cookies_path else None,
         }
 
         if deno_path and Path(deno_path).exists():
@@ -143,7 +143,9 @@ def _get_subtitles_subprocess(
             debug_log("Deno not found - remote-components may not work")
 
         # Build command
-        cmd = [ytdlp_path, "--dump-json", "--skip-download", "--cookies", str(cookies_path)]
+        cmd = [ytdlp_path, "--dump-json", "--skip-download"]
+        if cookies_path:
+            cmd += ["--cookies", str(cookies_path)]
 
         # Check for feature flags
         try:

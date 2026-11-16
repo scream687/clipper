@@ -13,7 +13,9 @@ def validate_cookies(cookies_path: str | Path | None) -> tuple[bool, str]:
         (is_valid, error_message) — error_message is empty string when valid.
     """
     if not cookies_path:
-        return False, "cookies.txt not found. Please upload cookies.txt file."
+        # No cookies configured: run anonymously. Public videos do not need a
+        # logged-in session, and this keeps a Google account out of the downloader.
+        return True, ""
 
     path = Path(cookies_path)
     if not path.exists():

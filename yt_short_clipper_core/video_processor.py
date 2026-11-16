@@ -148,7 +148,7 @@ class _YTDlpLogger:
         self._log(f"❌ {msg}")
 
 
-def _get_cookies_path() -> str:
+def _get_cookies_path() -> str | None:
     """Find cookies.txt in cwd, app dir, or Tauri app data dir."""
     app_dir = _get_app_dir()
     for loc in [Path("cookies.txt"), app_dir / "cookies.txt"]:
@@ -169,7 +169,7 @@ def _get_cookies_path() -> str:
             return str(ck)
     except Exception:
         pass
-    raise RuntimeError("cookies.txt not found. Please upload cookies first.")
+    return None  # no cookies.txt anywhere: download anonymously
 
 
 def download_video_section(
