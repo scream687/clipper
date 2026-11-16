@@ -23,7 +23,7 @@ START, END, RANGE_SECONDS = "00:01:00,000", "00:01:20,000", 20.0
 EXPECTED_SECONDS = RANGE_SECONDS + DEFAULT_LEAD_IN + DEFAULT_TAIL_OUT
 DURATION_TOLERANCE = 1.0
 OUTPUT_SIZE = (1080, 1920)
-MODES = [("face", "black"), ("centered", "black"), ("centered", "blur")]
+MODES = [("face", "black"), ("centered", "black"), ("centered", "blurred")]
 FRAME_TIMES = (2.0, 12.0)  # one inside the hook window, one after it
 
 

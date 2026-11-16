@@ -15,8 +15,12 @@ MAX_PEAKS = 8
 PEAK_MIN_GAP_SECONDS = 30.0
 
 
-def fetch_heatmap(url: str, cookies_path: str | None = None) -> list[Point]:
-    """Return the video's replay graph, or [] when YouTube has none for it."""
+def fetch_video_info(url: str, cookies_path: str | None = None) -> dict[str, Any]:
+    """Probe a video without downloading it.
+
+    Returns id, title, channel, duration, language and the replay graph
+    (``heatmap`` is [] when YouTube has none for the video).
+    """
     import yt_dlp
 
     options: dict[str, Any] = {"skip_download": True, "quiet": True, "no_warnings": True}
@@ -24,7 +28,14 @@ def fetch_heatmap(url: str, cookies_path: str | None = None) -> list[Point]:
         options["cookiefile"] = cookies_path
     with yt_dlp.YoutubeDL(options) as ydl:
         info = ydl.extract_info(url, download=False)
-    return list(info.get("heatmap") or [])
+    return {
+        "id": info.get("id", ""),
+        "title": info.get("title", ""),
+        "channel": info.get("channel", ""),
+        "duration": info.get("duration") or 0,
+        "language": info.get("language"),
+        "heatmap": list(info.get("heatmap") or []),
+    }
 
 
 def _after_intro(heatmap: list[Point]) -> list[Point]:
