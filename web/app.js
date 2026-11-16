@@ -319,6 +319,7 @@ function updateRenderButton() {
   const button = el("render-button");
   const count = picked.size;
   button.disabled = busy || count === 0;
+  el("render-form").classList.toggle("has-picks", count > 0);
   button.textContent = count === 0 ? "Tick moments to make clips" : `Make ${count} clip${count === 1 ? "" : "s"}`;
 }
 

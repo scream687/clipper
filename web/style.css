@@ -76,9 +76,10 @@ fieldset { border: 0; min-width: 0; }
   padding: var(--space-4) var(--gutter);
   border-bottom: 1px solid var(--color-line);
 }
-.wordmark { font-weight: 700; letter-spacing: -0.01em; font-size: var(--text-lead); }
+.wordmark { font-weight: 700; letter-spacing: -0.01em; font-size: var(--text-lead); white-space: nowrap; }
+.masthead .quiet-button { white-space: nowrap; }
 .wordmark-tag {
-  margin-left: var(--space-2); padding: 0.125rem var(--space-2);
+  display: none; margin-left: var(--space-2); padding: 0.125rem var(--space-2);
   border: 1px solid var(--color-line); border-radius: var(--radius-pill);
   font: 500 var(--text-small) var(--font-mono); color: var(--color-muted);
 }
@@ -103,7 +104,10 @@ main > section { margin-top: var(--space-section); }
 .quiet-button:hover { border-color: var(--color-muted); background: var(--color-raised); }
 .quiet-button:active { transform: translateY(1px); }
 
-.text-link { color: var(--color-signal); text-underline-offset: 0.2em; font-size: var(--text-small); }
+.text-link {
+  display: inline-flex; align-items: center; min-height: 2.75rem;
+  color: var(--color-signal); text-underline-offset: 0.2em; font-size: var(--text-small);
+}
 .text-link:hover { text-decoration-thickness: 2px; }
 
 input, select, textarea {
@@ -210,12 +214,14 @@ code { font: var(--text-small) var(--font-mono); color: var(--color-text); }
 .replay-bar span { display: block; height: 100%; background: var(--color-signal); transform-origin: left; }
 
 .render-bar {
-  position: sticky; bottom: var(--space-3); z-index: 2;
   display: grid; gap: var(--space-4); margin-top: var(--space-5); padding: var(--space-4);
   background: oklch(25% 0.016 70 / 0.94); backdrop-filter: blur(10px);
   border: 1px solid var(--color-line); border-radius: var(--radius-panel);
   box-shadow: 0 24px 50px -20px oklch(0% 0 0 / 0.9);
 }
+/* Floats above the list only once something is ticked, so it never covers the
+   video title before there is anything to act on. */
+.render-bar.has-picks { position: sticky; bottom: var(--space-3); z-index: 2; }
 .render-bar legend { font-size: var(--text-small); font-weight: 600; color: var(--color-muted); margin-bottom: var(--space-2); }
 .segmented { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .segmented legend { float: left; width: 100%; }
@@ -229,7 +235,7 @@ code { font: var(--text-small) var(--font-mono); color: var(--color-text); }
 .segmented label:hover span { border-color: var(--color-muted); }
 .segmented input:checked + span { background: var(--color-signal); color: var(--color-signal-ink); border-color: var(--color-signal); font-weight: 700; }
 .segmented input:focus-visible + span { outline: 2px solid var(--color-signal); outline-offset: 2px; }
-.toggles { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-5); }
+.toggles { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); }
 .toggles legend { float: left; width: 100%; }
 .toggles label { display: inline-flex; align-items: center; gap: var(--space-2); min-height: 2.75rem; cursor: pointer; }
 .toggles label:has(input:disabled) { color: var(--color-muted); cursor: not-allowed; }
@@ -251,6 +257,10 @@ code { font: var(--text-small) var(--font-mono); color: var(--color-text); }
 
 /* ---------- wider screens ---------- */
 
+@media (min-width: 30rem) {
+  .wordmark-tag { display: inline; }
+}
+
 @media (min-width: 48rem) {
   .link-bar { grid-template-columns: minmax(0, 1fr) auto; }
   .options { grid-template-columns: repeat(4, minmax(0, 1fr)); }
@@ -259,7 +269,8 @@ code { font: var(--text-small) var(--font-mono); color: var(--color-text); }
   .highlight-pick { grid-row: auto; }
   .highlight-time { display: grid; gap: var(--space-1); }
   .highlight-meta { flex-direction: column; align-items: flex-end; gap: var(--space-2); }
-  .render-bar { grid-template-columns: auto minmax(0, 1fr) auto; align-items: end; gap: var(--space-6); }
+  .render-bar { grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: var(--space-5); }
+  .render-bar .solid-button { align-self: end; }
 }
 
 @media (prefers-reduced-motion: reduce) {

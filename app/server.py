@@ -38,6 +38,8 @@ SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "no-referrer",
+    # Always revalidate, so an edited page or a remade clip is never served stale.
+    "Cache-Control": "no-cache",
 }
 
 app = FastAPI(title="Clipper", docs_url=None, redoc_url=None)

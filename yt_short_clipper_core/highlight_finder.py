@@ -180,6 +180,9 @@ def find_highlights(
         prompt.replace("{min_seconds}", str(min_seconds))
         .replace("{max_seconds}", str(max_seconds))
         .replace("{target_seconds}", str(round((min_seconds + max_seconds) / 2)))
+        # The direction block and reminder mention the output language too, and
+        # are spliced in after the first pass above replaced it.
+        .replace("{output_language}", output_language or SAME_AS_TRANSCRIPT)
     )
 
     if temperature is None:
