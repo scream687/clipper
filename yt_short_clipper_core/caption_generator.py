@@ -2,6 +2,7 @@
 (sourced from the YouTube original-language subtitle) and burn them into video."""
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -13,6 +14,12 @@ import cv2
 from .helpers import get_ffmpeg_path
 
 LogFn = Callable[[str], None]
+
+# Arial Black has no Devanagari glyphs. libass would fall back to a thin face
+# with cramped word spacing, so Hindi captions get a bold Hindi font by name.
+_DEFAULT_CAPTION_FONT = "Arial Black"
+_DEVANAGARI_CAPTION_FONT = "Kohinoor Devanagari"
+_DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]")
 
 _SUBPROCESS_FLAGS = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
@@ -72,6 +79,8 @@ def _create_ass_subtitle(
     shadow = max(0, round(2 * scale_y))
     margin_side = max(0, round(50 * scale_x))
     margin_v = max(0, round(400 * scale_y))
+    has_devanagari = any(_DEVANAGARI_RE.search(w.word) for w in getattr(transcript, "words", None) or [])
+    font_name = _DEVANAGARI_CAPTION_FONT if has_devanagari else _DEFAULT_CAPTION_FONT
 
     ass_content = f"""[Script Info]
 Title: Auto-generated captions
@@ -83,7 +92,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial Black,{font_size},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,{outline},{shadow},2,{margin_side},{margin_side},{margin_v},1
+Style: Default,{font_name},{font_size},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,{outline},{shadow},2,{margin_side},{margin_side},{margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
