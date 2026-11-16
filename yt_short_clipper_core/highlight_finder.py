@@ -19,6 +19,13 @@ LogFn = Callable[[str], None]
 # input at 1000 chars; this is the backend guard for CLI/older callers.
 MAX_USER_DIRECTION_CHARS = 2000
 
+# Clip length limits. The prompt templates carry {min_seconds}/{max_seconds}
+# placeholders and the validator enforces the same pair, so the two cannot drift.
+DEFAULT_MIN_SECONDS = 60
+DEFAULT_MAX_SECONDS = 120
+# The model rounds timestamps to cue boundaries, so a pick may land a hair short.
+DURATION_SLACK_SECONDS = 2
+
 # Sampling temperature. Without a direction, variety is welcome. With one,
 # adherence matters more than creativity: at 1.0 the same direction was followed
 # on one run and ignored on the next, so directed runs sample much colder.
@@ -28,7 +35,8 @@ DIRECTED_TEMPERATURE = 0.3
 # Placeholders the prompt template owns — stripped from the user's text so a
 # direction can't smuggle a second transcript (or blank one out) into the prompt.
 _PLACEHOLDER_RE = re.compile(
-    r"\{(?:num_clips|video_context|transcript|user_direction|output_language)\}"
+    r"\{(?:num_clips|video_context|transcript|user_direction|output_language"
+    r"|min_seconds|max_seconds|target_seconds)\}"
 )
 
 # The fences the direction is wrapped in. Stripped from the user text so it
@@ -123,6 +131,9 @@ def find_highlights(
     user_direction: str | None = None,
     output_language: str | None = None,
     log: LogFn | None = None,
+    min_seconds: int = DEFAULT_MIN_SECONDS,
+    max_seconds: int = DEFAULT_MAX_SECONDS,
+    retention_note: str = "",
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     """Call the AI model and return (highlights, token_usage).
 
@@ -143,6 +154,8 @@ def find_highlights(
             f"- Channel: {video_info.get('channel', 'Unknown')}\n"
             f"- Deskripsi: {(video_info.get('description', '') or '')[:500]}"
         )
+    if retention_note:
+        video_context = f"{video_context}\n\n{retention_note}".strip()
 
     direction_block = build_direction_block(user_direction)
     has_placeholder = "{user_direction}" in system_prompt
@@ -160,6 +173,14 @@ def find_highlights(
         # that is the only copy it will have.
         tail = build_direction_reminder(user_direction) if has_placeholder else direction_block
         prompt = prompt.rstrip() + "\n" + tail
+
+    # Clip length is configurable; fill it in last so the direction block and
+    # its reminder (appended above) get the same numbers as the main template.
+    prompt = (
+        prompt.replace("{min_seconds}", str(min_seconds))
+        .replace("{max_seconds}", str(max_seconds))
+        .replace("{target_seconds}", str(round((min_seconds + max_seconds) / 2)))
+    )
 
     if temperature is None:
         temperature = DIRECTED_TEMPERATURE if direction_block else DEFAULT_TEMPERATURE
@@ -223,7 +244,8 @@ def find_highlights(
 
     raw_highlights = parse_highlights_json(result, log)
     valid = _validate_highlights(
-        raw_highlights, num_clips, log, parse_requested_ranges(user_direction)
+        raw_highlights, num_clips, log, parse_requested_ranges(user_direction),
+        min_seconds=min_seconds, max_seconds=max_seconds,
     )
     return valid, token_usage
 
@@ -291,6 +313,8 @@ def _validate_highlights(
     num_clips: int,
     log: LogFn,
     requested_ranges: list[tuple[float, float]] | None = None,
+    min_seconds: int = DEFAULT_MIN_SECONDS,
+    max_seconds: int = DEFAULT_MAX_SECONDS,
 ) -> list[dict[str, Any]]:
     valid: list[dict[str, Any]] = []
     requested_ranges = requested_ranges or []
@@ -317,12 +341,13 @@ def _validate_highlights(
             parse_timestamp(h["start_time"]), parse_timestamp(h["end_time"]), requested_ranges
         )
 
-        if 58 <= duration <= 120 or exact:
+        in_range = min_seconds - DURATION_SLACK_SECONDS <= duration <= max_seconds
+        if in_range or exact:
             valid.append(h)
-            note = " - exact range from your direction" if exact and not 58 <= duration <= 120 else ""
+            note = " - exact range from your direction" if exact and not in_range else ""
             log(f"OK {title} ({duration:.0f}s) [score {h['virality_score']}/10]{note}")
         else:
-            log(f"Skip {title} ({duration:.0f}s) - outside 58-120s")
+            log(f"Skip {title} ({duration:.0f}s) - outside {min_seconds}-{max_seconds}s")
 
         if len(valid) >= num_clips:
             break

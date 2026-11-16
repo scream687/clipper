@@ -7,7 +7,12 @@ from typing import Any, Callable
 
 from .constants import resolve_output_language
 from .helpers import debug_log
-from .highlight_finder import find_highlights, parse_requested_ranges
+from .highlight_finder import (
+    DEFAULT_MAX_SECONDS,
+    DEFAULT_MIN_SECONDS,
+    find_highlights,
+    parse_requested_ranges,
+)
 from .srt_parser import extract_transcript_for_highlight, parse_srt
 from .subtitle_downloader import download_caption_words, download_subtitle_only
 
@@ -24,6 +29,9 @@ def find_highlights_only(
     user_direction: str | None = None,
     output_language: str | None = None,
     log: LogFn | None = None,
+    min_seconds: int = DEFAULT_MIN_SECONDS,
+    max_seconds: int = DEFAULT_MAX_SECONDS,
+    retention_note: str = "",
 ) -> dict[str, Any]:
     """Phase 1: download subtitle, run AI highlight detection, save session.
 
@@ -99,7 +107,7 @@ def find_highlights_only(
         exact = parse_requested_ranges(user_direction)
         if exact:
             spans = ", ".join(f"{a:.0f}s-{b:.0f}s" for a, b in exact)
-            log(f"Exact time range(s) requested, exempt from the 58-120s rule: {spans}")
+            log(f"Exact time range(s) requested, exempt from the {min_seconds}-{max_seconds}s rule: {spans}")
     highlights, token_usage = find_highlights(
         transcript=transcript,
         video_info=video_info,
@@ -113,6 +121,9 @@ def find_highlights_only(
         user_direction=user_direction,
         output_language=resolved_language,
         log=log,
+        min_seconds=min_seconds,
+        max_seconds=max_seconds,
+        retention_note=retention_note,
     )
 
     if not highlights:

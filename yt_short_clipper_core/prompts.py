@@ -77,13 +77,13 @@ SEARCH THE WHOLE TRANSCRIPT:
 DURATION (CRITICAL)
 ===================
 
-* Every clip MUST run 60-120 seconds.
-* Aim for 85-95 seconds.
+* Every clip MUST run {min_seconds}-{max_seconds} seconds.
+* Aim for about {target_seconds} seconds.
 * Compute duration from the transcript timestamps. Never estimate it from how
   much text a segment contains.
 
-Shorter than 60 seconds -> extend it with context before or after.
-Longer than 120 seconds -> trim the irrelevant edges without breaking the story.
+Shorter than {min_seconds} seconds -> extend it with context before or after.
+Longer than {max_seconds} seconds -> trim the irrelevant edges without breaking the story.
 
 Copy timestamps from the transcript's own time markers. Do not invent times that
 never appear in it.
@@ -165,7 +165,7 @@ FINAL CHECK BEFORE YOU ANSWER
 =============================
 
 1. Exactly {num_clips} objects in the array.
-2. Every clip runs 60-120 seconds, measured from the timestamps you wrote —
+2. Every clip runs {min_seconds}-{max_seconds} seconds, measured from the timestamps you wrote —
    unless a user direction asked for an exact range.
 3. No two clips overlap, and they are not just consecutive chunks from the
    opening minutes.
@@ -193,9 +193,9 @@ How to follow it:
 * It does not override the clip count or the output format.
 * EXPLICIT TIME RANGES: when the direction names a clock range (e.g. "2:00 -
   2:50", or "dari 21:30 sampai 22:25"), use that range EXACTLY. Do not widen it,
-  narrow it or shift it. The 60-120 second rule DOES NOT APPLY to that segment —
+  narrow it or shift it. The {min_seconds}-{max_seconds} second rule DOES NOT APPLY to that segment —
   the requested range wins, even at 50 seconds or over 2 minutes.
-* Segments the direction did NOT give a range for still must run 60-120 seconds.
+* Segments the direction did NOT give a range for still must run {min_seconds}-{max_seconds} seconds.
 * When the direction rules something out ("skip the intro", "no sponsor read"),
   do not select that material at all.
 * If fewer moments match the direction than the number of clips requested, still
@@ -242,7 +242,7 @@ Before writing the JSON, confirm every one of these:
 1. Every point of the direction above is satisfied.
 2. If it names "clip pertama" / "clip 1", that segment is the FIRST element.
 3. Every explicit time range is used EXACTLY as written — same start, same end,
-   never widened to reach 60-120 seconds.
+   never widened to reach {min_seconds}-{max_seconds} seconds.
 4. Direction-matching segments come first, backups last.
 5. Your picks are not just consecutive chunks from the start of the video.
 6. Nothing the direction ruled out appears in any segment.
