@@ -8,7 +8,6 @@ none. Words the AI skips fall back to a rule-based converter.
 import json
 import os
 import re
-import unicodedata
 from typing import Callable
 
 from app import DATA_DIR
@@ -33,13 +32,10 @@ def needs_roman(text: str) -> bool:
 
 
 def fallback(word: str) -> str:
-    """Rule-based last resort: ITRANS, lower-cased, with anything non-ASCII dropped."""
-    from indic_transliteration import sanscript
-    from indic_transliteration.sanscript import transliterate
+    """Rule-based last resort (PeakCut's speller, MIT): common words from a list, the rest by letters."""
+    from app.roman import to_roman
 
-    text = transliterate(word, sanscript.DEVANAGARI, sanscript.ITRANS).replace(".N", "n").replace("M", "n")
-    text = unicodedata.normalize("NFKD", text).lower()
-    return re.sub(r"[^a-z0-9'.,!?-]", "", text) or word
+    return to_roman(word) or word
 
 
 def _load_cache() -> dict[str, str]:

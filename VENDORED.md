@@ -1,5 +1,7 @@
 # Third-party code
 
+`app/roman.py` is PeakCut's Hinglish speller ([haziqahmedqasmi/PeakCut](https://github.com/haziqahmedqasmi/PeakCut), MIT); the notice is in that file.
+
 `app/youtube.py` adapts `parse_json3_words` and `find_orig_caption_code` from
 [jipraks/yt-short-clipper](https://github.com/jipraks/yt-short-clipper) (commit `f6d6d98`),
 MIT License, Copyright (c) Aji Prakoso. The notice is kept in that file's docstring.

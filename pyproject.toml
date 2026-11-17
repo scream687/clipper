@@ -13,7 +13,6 @@ dependencies = [
     "requests>=2.31.0",
     "fastapi",
     "uvicorn",
-    "indic-transliteration>=2.3.82",
     "python-multipart>=0.0.34",
 ]
 
