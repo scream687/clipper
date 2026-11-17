@@ -25,20 +25,21 @@ GROUP_STICK_S = 0.3        # gaps shorter than this keep the previous group on s
 HOOK_SECONDS = 4.0
 BEEP_PAD_S = 0.08          # Whisper word edges are loose; widen beeps a little
 
-# Shared by the ASS writer and the CSS preview. Sizes are px at a 1080 short side.
+# Shared by the ASS writer and the CSS preview. Sizes are em sizes in px at a 1080 short side
+# (CSS font-size). ASS sizes mean line height instead, so app/ass.py converts with line_height().
 LOOKS = {
-    "highlight": {"font": "Arial Black", "size": 76, "uppercase": True, "max_lines": 1, "max_words": 3,
+    "highlight": {"font": "Arial Black", "size": 60, "uppercase": True, "max_lines": 1, "max_words": 3,
                   "color": "#FFFFFF", "active": "#FFE14D", "outline": 7, "box": False},
-    "karaoke":   {"font": "Arial Black", "size": 66, "uppercase": True, "max_lines": 2, "max_words": 8,
+    "karaoke":   {"font": "Arial Black", "size": 54, "uppercase": True, "max_lines": 2, "max_words": 8,
                   "color": "#FFFFFF", "active": "#FFE14D", "outline": 6, "box": False},
-    "pop":       {"font": "Arial Black", "size": 108, "uppercase": True, "max_lines": 1, "max_words": 1,
+    "pop":       {"font": "Arial Black", "size": 84, "uppercase": True, "max_lines": 1, "max_words": 1,
                   "color": "#FFFFFF", "active": "#FFE14D", "outline": 8, "box": False},
-    "boxed":     {"font": "Arial Bold", "size": 54, "uppercase": False, "max_lines": 2, "max_words": 14,
+    "boxed":     {"font": "Arial Bold", "size": 46, "uppercase": False, "max_lines": 2, "max_words": 14,
                   "color": "#FFFFFF", "active": "#FFFFFF", "outline": 0, "box": True},
 }
-HOOK_STYLE = {"font": "Arial Black", "size": 64, "min_size": 40, "y": 0.15, "max_lines": 3}
-HANDLE_STYLE = {"font": "Arial Bold", "size": 34, "y": 0.91}
-CREDIT_STYLE = {"font": "Arial Bold", "size": 26, "y": 0.965}
+HOOK_STYLE = {"font": "Arial Black", "size": 46, "min_size": 30, "y": 0.15, "max_lines": 3}
+HANDLE_STYLE = {"font": "Arial Bold", "size": 30, "y": 0.91}
+CREDIT_STYLE = {"font": "Arial Bold", "size": 22, "y": 0.965}
 
 
 class Segment(BaseModel):
@@ -118,6 +119,18 @@ def _font(name: str, size: int) -> ImageFont.FreeTypeFont:
 
 def measure(text: str, font: str, size: int) -> float:
     return _font(font, size).getlength(text)
+
+
+@lru_cache(maxsize=8)
+def _line_ratio(font: str) -> float:
+    """(ascent + descent) / em, measured at a large size so integer rounding does not distort it."""
+    ascent, descent = _font(font, 4096).getmetrics()
+    return (ascent + descent) / 4096
+
+
+def line_height(font: str, size: float) -> float:
+    """Ascent + descent in px: libass reads an ASS Fontsize as this, and the preview uses it as line height."""
+    return round(size * _line_ratio(font), 2)
 
 
 def _scale(width: int, height: int) -> float:
@@ -286,7 +299,8 @@ def build_plan(video: Video, clip: Clip, handle: str = "") -> Plan:
         fps=fps, width=width, height=height, duration=duration, segments=segments, words=plan_words,
         captions=_caption_groups(plan_words, seg_of, look, safe_px, scale), look=clip.look,
         style={**look, "size": round(look["size"] * scale), "outline": round(look["outline"] * scale),
-               "hook": {**HOOK_STYLE, "size": hook_size},
+               "line_px": line_height(look["font"], round(look["size"] * scale)),
+               "hook": {**HOOK_STYLE, "size": hook_size, "line_px": line_height(HOOK_STYLE["font"], hook_size)},
                "handle": {**HANDLE_STYLE, "size": round(HANDLE_STYLE["size"] * scale)},
                "credit": {**CREDIT_STYLE, "size": round(CREDIT_STYLE["size"] * scale)}},
         caption_y=CAPTION_Y[clip.shape], safe_width_px=safe_px, framing=clip.framing,

@@ -4,8 +4,6 @@ The graph is a list of points ``{"start_time", "end_time", "value"}`` with
 ``value`` normalised to 0..1. Only videos with enough views have one.
 """
 
-from typing import Any
-
 Point = dict[str, float]
 
 # The opening seconds always score ~1.0 because every viewer plays them. That is
@@ -13,29 +11,6 @@ Point = dict[str, float]
 INTRO_SKIP_FRACTION = 0.05
 MAX_PEAKS = 8
 PEAK_MIN_GAP_SECONDS = 30.0
-
-
-def fetch_video_info(url: str, cookies_path: str | None = None) -> dict[str, Any]:
-    """Probe a video without downloading it.
-
-    Returns id, title, channel, duration, language and the replay graph
-    (``heatmap`` is [] when YouTube has none for the video).
-    """
-    import yt_dlp
-
-    options: dict[str, Any] = {"skip_download": True, "quiet": True, "no_warnings": True}
-    if cookies_path:
-        options["cookiefile"] = cookies_path
-    with yt_dlp.YoutubeDL(options) as ydl:
-        info = ydl.extract_info(url, download=False)
-    return {
-        "id": info.get("id", ""),
-        "title": info.get("title", ""),
-        "channel": info.get("channel", ""),
-        "duration": info.get("duration") or 0,
-        "language": info.get("language"),
-        "heatmap": list(info.get("heatmap") or []),
-    }
 
 
 def _after_intro(heatmap: list[Point]) -> list[Point]:

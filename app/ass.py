@@ -4,7 +4,7 @@ Line breaks come from the plan, so libass never re-wraps (WrapStyle 2).
 web/preview.js draws the same plan with CSS.
 """
 
-from app.plan import Plan
+from app.plan import Plan, line_height
 
 ACTIVE_ALPHA_BOX = "4D"   # 70 % opaque black behind boxed captions and the hook
 SOFT_ALPHA = "26"         # handle and credit drawn at 85 % opacity
@@ -27,7 +27,9 @@ def _clean(text: str) -> str:
 
 
 def _style(name, font, size, primary, secondary, outline_colour, back, bold, border_style, outline, align) -> str:
-    return (f"Style: {name},{font},{size},{primary},{secondary},{outline_colour},{back},{-1 if bold else 0},0,0,0,"
+    # ASS Fontsize is the line height (ascent + descent), not the em size the plan and CSS use.
+    ass_size = line_height("Arial Bold" if font == "Arial" else font, size)
+    return (f"Style: {name},{font},{ass_size},{primary},{secondary},{outline_colour},{back},{-1 if bold else 0},0,0,0,"
             f"100,100,0,0,{border_style},{outline},0,{align},0,0,0,1")
 
 

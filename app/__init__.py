@@ -1,8 +1,4 @@
-"""Clipper web app.
-
-Importing this package pins the vendored core to the caption-capable ffmpeg
-through the CLIPPER_FFMPEG environment variable.
-"""
+"""Clipper web app: shared paths and the caption-capable ffmpeg build."""
 
 import os
 from pathlib import Path
@@ -17,7 +13,6 @@ FFMPEG = str(FFMPEG_BIN / "ffmpeg")
 FFPROBE = str(FFMPEG_BIN / "ffprobe")
 if not Path(FFMPEG).exists():
     raise RuntimeError(f"ffmpeg-full not found at {FFMPEG}. Install it with: brew install ffmpeg-full")
-os.environ.setdefault("CLIPPER_FFMPEG", FFMPEG)
 
 
 def cookies_path() -> str | None:

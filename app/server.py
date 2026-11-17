@@ -1,11 +1,10 @@
-"""Local web server for the clipper. Bind it to 127.0.0.1 only (see run.sh)."""
+"""Local web server for the clipper. Binds to 127.0.0.1 only (see run.sh)."""
 
 import json
 import os
-import re
-import shutil
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Request
@@ -13,32 +12,27 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app import DATA_DIR, ROOT, cookies_path, jobs
-from app.retention import fetch_video_info, pick_peaks, retention_note, score_range
+from app import DATA_DIR, ROOT, library, queue
+from app.model import Clip, CropKey, FramingMode, Look, Shape, Video
+from app.pipeline import analyse, create_from_youtube
+from app.plan import FONTS, build_plan
+from app.render import render
 
 SETTINGS_FILE = DATA_DIR / "settings.json"
-LOGO_FILE = DATA_DIR / "logo.png"
 WEB_DIR = ROOT / "web"
-
 YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
 LOCAL_HOSTS = {"127.0.0.1", "localhost"}
-SESSION_ID_RE = re.compile(r"\d{8}_\d{6}")
-DEVANAGARI_RE = re.compile(r"[ऀ-ॿ]")
-DEVANAGARI_FONT = "/System/Library/Fonts/Kohinoor.ttc"
-DEFAULT_BASE_URL = "https://api.openai.com/v1"
-HOOK_SECONDS = 4.0
-MAX_DIRECTION_CHARS = 1000
+FONT_FILES = {"arial-black.ttf": FONTS["Arial Black"], "arial-bold.ttf": FONTS["Arial Bold"]}
+MAX_TEXT = 300
 
 SECURITY_HEADERS = {
-    # Everything the page needs is served from here; nothing loads from the network.
     "Content-Security-Policy": (
-        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; "
         "media-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
     ),
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "no-referrer",
-    # Always revalidate, so an edited page or a remade clip is never served stale.
     "Cache-Control": "no-cache",
 }
 
@@ -55,12 +49,7 @@ def is_youtube_url(url: str) -> bool:
 
 @app.middleware("http")
 async def local_requests_only(request: Request, call_next):
-    """Refuse anything not addressed to, or not coming from, this machine's own page.
-
-    The Host check stops DNS rebinding; the Origin check stops another website
-    from driving this server through the user's browser (for example pointing
-    the AI endpoint at itself to capture the API key).
-    """
+    """Refuse requests not addressed to this machine (DNS rebinding) or sent by another website."""
     host = (request.headers.get("host") or "").rsplit(":", 1)[0].lower()
     origin = request.headers.get("origin")
     origin_host = (urlparse(origin).hostname or "").lower() if origin else None
@@ -72,23 +61,31 @@ async def local_requests_only(request: Request, call_next):
     return response
 
 
+def _not_found(what: str):
+    raise HTTPException(404, f"{what} not found")
+
+
+def get_video_or_404(video_id: str) -> Video:
+    try:
+        return library.load_video(video_id)
+    except KeyError:
+        _not_found("Video")
+
+
+def get_clip_or_404(video_id: str, index: int) -> Clip:
+    try:
+        return library.load_clip(video_id, index)
+    except KeyError:
+        _not_found("Clip")
+
+
 # ---------- settings ----------
 
 class SettingsIn(BaseModel):
-    base_url: str = DEFAULT_BASE_URL
-    model: str = Field(min_length=1, max_length=200)
-    api_key: str | None = Field(default=None, max_length=500)
-
-    @field_validator("base_url")
-    @classmethod
-    def base_url_is_http(cls, value: str) -> str:
-        parsed = urlparse(value.strip())
-        if parsed.scheme not in ("http", "https") or not parsed.hostname:
-            raise ValueError("The AI endpoint must be an http(s) address")
-        return value.strip().rstrip("/")
+    handle: str = Field(default="", max_length=60)
 
 
-def load_settings() -> dict[str, str]:
+def load_settings() -> dict[str, Any]:
     try:
         return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -97,128 +94,33 @@ def load_settings() -> dict[str, str]:
         raise HTTPException(500, f"Could not read {SETTINGS_FILE.name}: {error}") from error
 
 
-def save_settings(settings: dict[str, str]) -> None:
+def save_settings(settings: dict[str, Any]) -> None:
     SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    # Created private from the start, so the key is never world-readable.
     descriptor = os.open(SETTINGS_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
         json.dump(settings, handle, indent=2)
-    os.chmod(SETTINGS_FILE, 0o600)
-
-
-def public_settings(settings: dict[str, str]) -> dict[str, Any]:
-    key = settings.get("api_key", "")
-    return {
-        "base_url": settings.get("base_url", DEFAULT_BASE_URL),
-        "model": settings.get("model", ""),
-        "api_key_set": bool(key),
-        "api_key_hint": key[-4:] if len(key) >= 8 else "",
-        "logo_available": LOGO_FILE.exists(),
-    }
 
 
 @app.get("/api/settings")
 def get_settings() -> dict[str, Any]:
-    return public_settings(load_settings())
+    return {"handle": load_settings().get("handle", "")}
 
 
 @app.put("/api/settings")
 def put_settings(body: SettingsIn) -> dict[str, Any]:
-    current = load_settings()
-    updated = {
-        "base_url": body.base_url,
-        "model": body.model.strip(),
-        "api_key": (body.api_key or "").strip() or current.get("api_key", ""),
-    }
-    save_settings(updated)
-    return public_settings(updated)
+    save_settings({**load_settings(), "handle": body.handle.strip()})
+    return get_settings()
 
 
-# ---------- sessions ----------
+# ---------- videos ----------
 
-def session_dir(session_id: str) -> Path:
-    """Resolve a session folder. The id format is the path-traversal guard."""
-    if not SESSION_ID_RE.fullmatch(session_id):
-        raise HTTPException(404, "Session not found")
-    path = DATA_DIR / "sessions" / session_id
-    if not (path / "session_data.json").is_file():
-        raise HTTPException(404, "Session not found")
-    return path
-
-
-def load_session(session_id: str) -> dict[str, Any]:
-    try:
-        return json.loads((session_dir(session_id) / "session_data.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise HTTPException(500, f"Session data is unreadable: {error}") from error
-
-
-def clip_file(session_id: str, index: int) -> Path:
-    return session_dir(session_id) / "clips" / f"clip_{index:03d}" / "master.mp4"
-
-
-def session_view(session_id: str) -> dict[str, Any]:
-    from yt_short_clipper_core.srt_parser import parse_timestamp
-
-    data = load_session(session_id)
-    video = data.get("video_info") or {}
-    video_id = data.get("video_id", "")
-    highlights = []
-    for position, h in enumerate(data.get("highlights", [])):
-        index = h.get("_highlight_index", position)
-        start = parse_timestamp(h["start_time"])
-        rendered = clip_file(session_id, index).is_file()
-        highlights.append({
-            "index": index,
-            "title": h.get("title", ""),
-            "description": h.get("description", ""),
-            "hook_text": h.get("hook_text", ""),
-            "start_time": h["start_time"],
-            "end_time": h["end_time"],
-            "start_seconds": round(start, 1),
-            "end_seconds": round(parse_timestamp(h["end_time"]), 1),
-            "duration_seconds": h.get("duration_seconds"),
-            "virality_score": h.get("virality_score"),
-            "retention_score": h.get("retention_score"),
-            "watch_url": f"https://youtu.be/{video_id}?t={int(start)}" if video_id else data.get("url", ""),
-            "clip_url": f"/api/sessions/{session_id}/clips/{index}" if rendered else None,
-        })
-    # Most-replayed first; highlights with no replay data keep the AI's own ranking.
-    highlights.sort(key=lambda h: (-(h["retention_score"] or 0), -(h["virality_score"] or 0)))
-    return {
-        "session_id": session_id,
-        "url": data.get("url", ""),
-        "video": {"id": video_id, "title": video.get("title", ""), "channel": video.get("channel", ""),
-                  "duration": data.get("video_duration", 0)},
-        "heatmap": data.get("heatmap", []),
-        "captions_available": bool(data.get("caption_available")),
-        "highlights": highlights,
-    }
-
-
-@app.get("/api/sessions/{session_id}")
-def get_session(session_id: str) -> dict[str, Any]:
-    return session_view(session_id)
-
-
-@app.get("/api/sessions/{session_id}/clips/{index}")
-def get_clip(session_id: str, index: int, download: bool = False) -> FileResponse:
-    path = clip_file(session_id, index)
-    if index < 0 or not path.is_file():
-        raise HTTPException(404, "Clip not found")
-    name = f"clip_{session_id}_{index:03d}.mp4" if download else None
-    return FileResponse(path, media_type="video/mp4", filename=name)
-
-
-# ---------- jobs ----------
-
-class HighlightsIn(BaseModel):
+class NewVideo(BaseModel):
     url: str
-    num_clips: int = Field(default=5, ge=1, le=15)
-    min_seconds: int = Field(default=20, ge=5, le=600)
-    max_seconds: int = Field(default=60, ge=10, le=900)
-    direction: str = Field(default="", max_length=MAX_DIRECTION_CHARS)
-    output_language: str = Field(default="auto", pattern=r"^[A-Za-z-]{2,10}$")
+    shape: Shape = "9:16"
+    max_clips: int = Field(default=30, ge=1, le=50)
+    min_s: int = Field(default=20, ge=5, le=300)
+    max_s: int = Field(default=60, ge=10, le=600)
+    direction: str = Field(default="", max_length=1000)
 
     @field_validator("url")
     @classmethod
@@ -228,126 +130,186 @@ class HighlightsIn(BaseModel):
         return value.strip()
 
     @model_validator(mode="after")
-    def lengths_are_ordered(self) -> "HighlightsIn":
-        if self.max_seconds <= self.min_seconds:
-            raise ValueError("Maximum clip length must be greater than the minimum")
+    def lengths_are_ordered(self) -> "NewVideo":
+        if self.max_s <= self.min_s:
+            raise ValueError("The longest clip length must be more than the shortest")
         return self
 
 
-class RenderIn(BaseModel):
-    session_id: str
-    indices: list[int] = Field(min_length=1, max_length=15)
-    reframe: Literal["face", "bars", "blur"] = "face"
-    captions: bool = True
-    hook: bool = True
-    credit: bool = False
-    logo: bool = False
+def _summary(video: Video) -> dict[str, Any]:
+    clips = library.load_clips(video.id)
+    job = queue.active_for(video.id)
+    return {"id": video.id, "title": video.title, "channel": video.channel, "url": video.url,
+            "duration": video.duration, "stage": video.stage, "error": video.error, "shape": video.shape,
+            "created_at": video.created_at, "clip_count": len(clips),
+            "kept": sum(1 for c in clips if c.status == "kept"), "job": job["id"] if job else None}
 
 
-def find_highlights_job(body: HighlightsIn, settings: dict[str, str], log: jobs.LogFn) -> dict[str, str]:
-    from yt_short_clipper_core.session import find_highlights_only
-    from yt_short_clipper_core.srt_parser import parse_timestamp
-
-    log("Reading video details and replay graph...")
-    info = fetch_video_info(body.url, cookies_path())
-    heatmap = info["heatmap"]
-    peaks = pick_peaks(heatmap)
-    if heatmap:
-        log(f"Replay graph found: {len(peaks)} most-replayed moments passed to the AI")
-    else:
-        log("This video has no replay graph; the AI picks from the transcript alone")
-
-    session = find_highlights_only(
-        url=body.url,
-        num_clips=body.num_clips,
-        subtitle_language=(info["language"] or "en").split("-")[0],
-        output_dir=DATA_DIR,
-        cookies_path=cookies_path(),
-        ai={"api_key": settings["api_key"], "base_url": settings.get("base_url", DEFAULT_BASE_URL),
-            "model": settings["model"]},
-        user_direction=body.direction or None,
-        output_language=body.output_language,
-        log=log,
-        min_seconds=body.min_seconds,
-        max_seconds=body.max_seconds,
-        retention_note=retention_note(peaks),
-    )
-
-    scored = [
-        {**h, "_highlight_index": index,
-         "retention_score": score_range(heatmap, parse_timestamp(h["start_time"]), parse_timestamp(h["end_time"]))}
-        for index, h in enumerate(session["highlights"])
-    ]
-    enriched = {**session, "highlights": scored, "heatmap": heatmap,
-                "video_id": info["id"], "video_duration": info["duration"]}
-    path = Path(session["session_dir"]) / "session_data.json"
-    path.write_text(json.dumps(enriched, indent=2, ensure_ascii=False), encoding="utf-8")
-    return {"session_id": Path(session["session_dir"]).name}
+def _analyse_job(video_id: str):
+    return lambda log: {"video_id": analyse(video_id, log).id}
 
 
-def render_job(body: RenderIn, data: dict[str, Any], log: jobs.LogFn) -> dict[str, str]:
-    from yt_short_clipper_core.clip_processor import process_selected_highlights
-
-    folder = session_dir(body.session_id)
-    chosen = [h for h in data["highlights"] if h.get("_highlight_index") in body.indices]
-    for h in chosen:  # rendering again with new options replaces the old clip
-        shutil.rmtree(clip_file(body.session_id, h["_highlight_index"]).parent, ignore_errors=True)
-
-    hook_style: dict[str, Any] = {"duration_seconds": HOOK_SECONDS}
-    if any(DEVANAGARI_RE.search(h.get("hook_text", "")) for h in chosen):
-        hook_style["font_path"] = DEVANAGARI_FONT
-    channel = (data.get("video_info") or {}).get("channel", "")
-
-    process_selected_highlights(
-        url=data["url"],
-        highlights=chosen,
-        session_dir=str(folder),
-        options={
-            "reframeMode": "face" if body.reframe == "face" else "centered",
-            "centeredBackground": "blurred" if body.reframe == "blur" else "black",
-            "addCaptions": body.captions,
-            "addHook": body.hook,
-            "addCreditWatermark": body.credit and bool(channel),
-            "addWatermark": body.logo and LOGO_FILE.exists(),
-        },
-        ai={"hook_style": hook_style,
-            "credit_watermark": {"text": f"Credit: {channel}"},
-            "watermark": {"image_path": str(LOGO_FILE)}},
-        log=log,
-    )
-    return {"session_id": body.session_id}
+@app.get("/api/videos")
+def list_videos() -> list[dict[str, Any]]:
+    return [_summary(v) for v in library.list_videos()]
 
 
-def start_job(kind: str, work) -> dict[str, str]:
-    try:
-        return {"job_id": jobs.start(kind, work)}
-    except jobs.Busy as busy:
-        raise HTTPException(409, str(busy)) from busy
+@app.post("/api/videos")
+def add_video(body: NewVideo) -> dict[str, Any]:
+    video = create_from_youtube(body.url, {"max_clips": body.max_clips, "min_s": body.min_s, "max_s": body.max_s,
+                                           "direction": body.direction.strip()}, body.shape)
+    job = queue.submit("analysis", "analyse", video.id, _analyse_job(video.id))
+    return {"id": video.id, "job": job}
 
 
-@app.post("/api/highlights")
-def post_highlights(body: HighlightsIn) -> dict[str, str]:
-    settings = load_settings()
-    if not settings.get("api_key") or not settings.get("model"):
-        raise HTTPException(400, "Add your AI endpoint, model and API key in Settings first.")
-    return start_job("find", lambda log: find_highlights_job(body, settings, log))
+@app.post("/api/videos/{video_id}/retry")
+def retry_video(video_id: str) -> dict[str, Any]:
+    video = get_video_or_404(video_id)
+    if queue.active_for(video_id):
+        raise HTTPException(409, "This video is already being worked on.")
+    library.save_video(video.model_copy(update={"stage": "queued", "error": None}))
+    return {"id": video_id, "job": queue.submit("analysis", "analyse", video_id, _analyse_job(video_id))}
 
 
-@app.post("/api/render")
-def post_render(body: RenderIn) -> dict[str, str]:
-    data = load_session(body.session_id)
-    known = {h.get("_highlight_index") for h in data.get("highlights", [])}
-    if not set(body.indices) <= known:
-        raise HTTPException(422, "One of the chosen highlights is not in this session")
-    return start_job("render", lambda log: render_job(body, data, log))
+@app.delete("/api/videos/{video_id}")
+def delete_video(video_id: str) -> dict[str, str]:
+    get_video_or_404(video_id)
+    if queue.active_for(video_id):
+        raise HTTPException(409, "Wait for the current job on this video to finish first.")
+    library.delete_video(video_id)
+    return {"deleted": video_id}
 
+
+@app.get("/api/videos/{video_id}")
+def get_video(video_id: str) -> dict[str, Any]:
+    video = get_video_or_404(video_id)
+    words = {w.id: w for w in video.words}
+    clips = []
+    for c in library.load_clips(video_id):
+        first, last = words.get(c.first_word), words.get(c.last_word)
+        clips.append({**c.model_dump(include={"index", "title", "hook", "description", "score", "retention", "status",
+                                              "look", "shape"}),
+                      "start": first.start if first else 0, "end": last.end if last else 0,
+                      "exported": (library.clip_dir(video_id, c.index) / "export.mp4").is_file()})
+    return {**_summary(video), "heatmap": video.heatmap, "language": video.language,
+            "has_proxy": (library.video_dir(video_id) / "proxy.mp4").is_file(), "clips": clips}
+
+
+@app.get("/api/videos/{video_id}/words")
+def get_words(video_id: str) -> list[dict[str, Any]]:
+    return [w.model_dump() for w in get_video_or_404(video_id).words]
+
+
+@app.get("/api/videos/{video_id}/proxy.mp4")
+def get_proxy(video_id: str) -> FileResponse:
+    get_video_or_404(video_id)
+    path = library.video_dir(video_id) / "proxy.mp4"
+    if not path.is_file():
+        _not_found("Preview copy")
+    return FileResponse(path, media_type="video/mp4")
+
+
+# ---------- clips ----------
+
+class ClipEdit(BaseModel):
+    first_word: int
+    last_word: int
+    cut_word_ids: list[int] = Field(default=[], max_length=5000)
+    text_fixes: dict[int, str] = {}
+    look: Look = "highlight"
+    shape: Shape = "9:16"
+    framing: FramingMode = "crop"
+    manual_keys: list[CropKey] = Field(default=[], max_length=2000)
+    hook: str = Field(default="", max_length=MAX_TEXT)
+    show_hook: bool = True
+    show_handle: bool = True
+    show_credit: bool = True
+    swear_filter: bool = False
+    title: str = Field(default="", max_length=MAX_TEXT)
+    description: str = Field(default="", max_length=1000)
+    status: str = Field(default="new", pattern="^(new|kept|discarded)$")
+
+    @field_validator("text_fixes")
+    @classmethod
+    def fixes_are_short(cls, value: dict[int, str]) -> dict[int, str]:
+        if any(len(text) > 60 or not text.strip() for text in value.values()):
+            raise ValueError("A corrected word must be 1-60 characters")
+        return {k: v.strip() for k, v in value.items()}
+
+
+def _plan_for(video: Video, clip: Clip) -> dict[str, Any]:
+    return build_plan(video, clip, handle=load_settings().get("handle", "")).model_dump()
+
+
+@app.get("/api/videos/{video_id}/clips/{index}")
+def get_clip(video_id: str, index: int) -> dict[str, Any]:
+    video, clip = get_video_or_404(video_id), get_clip_or_404(video_id, index)
+    export = library.clip_dir(video_id, index) / "export.mp4"
+    return {"clip": clip.model_dump(), "plan": _plan_for(video, clip), "exported": export.is_file(),
+            "job": (queue.active_for(f"{video_id}/{index}") or {}).get("id")}
+
+
+@app.put("/api/videos/{video_id}/clips/{index}")
+def edit_clip(video_id: str, index: int, body: ClipEdit) -> dict[str, Any]:
+    video, clip = get_video_or_404(video_id), get_clip_or_404(video_id, index)
+    ids = {w.id for w in video.words}
+    if body.first_word not in ids or body.last_word not in ids or body.first_word > body.last_word:
+        raise HTTPException(422, "The clip's start must be a word before its end.")
+    inside = set(range(body.first_word, body.last_word + 1))
+    if not set(body.cut_word_ids) <= inside or not set(body.text_fixes) <= inside:
+        raise HTTPException(422, "Cuts and corrections must be inside the clip.")
+    if set(range(body.first_word, body.last_word + 1)) <= set(body.cut_word_ids):
+        raise HTTPException(422, "A clip needs at least one word that is not cut.")
+    updated = clip.model_copy(update=body.model_dump())
+    library.save_clip(video_id, updated)
+    return {"clip": updated.model_dump(), "plan": _plan_for(video, updated)}
+
+
+@app.post("/api/videos/{video_id}/clips/{index}/export")
+def export_clip(video_id: str, index: int) -> dict[str, str]:
+    video, clip = get_video_or_404(video_id), get_clip_or_404(video_id, index)
+    source = library.video_dir(video_id) / "source.mp4"
+    if not source.is_file():
+        raise HTTPException(409, "The full video is no longer on disk, so this clip cannot be exported.")
+    subject = f"{video_id}/{index}"
+    if queue.active_for(subject):
+        raise HTTPException(409, "This clip is already being exported.")
+    plan = build_plan(video, clip, handle=load_settings().get("handle", ""))
+    out = library.clip_dir(video_id, index) / "export.mp4"
+
+    def work(log):
+        render(plan, source, out, log)
+        library.save_clip(video_id, library.load_clip(video_id, index).model_copy(update={"status": "kept"}))
+        return {"video_id": video_id, "index": index, "exported_at": datetime.now().isoformat(timespec="seconds")}
+
+    return {"job": queue.submit("export", "export", subject, work)}
+
+
+@app.get("/api/videos/{video_id}/clips/{index}/export.mp4")
+def download_export(video_id: str, index: int, download: bool = False) -> FileResponse:
+    video, clip = get_video_or_404(video_id), get_clip_or_404(video_id, index)
+    path = library.clip_dir(video_id, index) / "export.mp4"
+    if not path.is_file():
+        _not_found("Export")
+    name = f"{video.id}_{clip.index:02d}.mp4" if download else None
+    return FileResponse(path, media_type="video/mp4", filename=name)
+
+
+# ---------- jobs, fonts, page ----------
 
 @app.get("/api/jobs/{job_id}")
 def get_job(job_id: str) -> dict[str, Any]:
-    job = jobs.get(job_id)
+    job = queue.get(job_id)
     if job is None:
-        raise HTTPException(404, "Job not found (the server may have restarted)")
+        _not_found("Job (the server may have restarted)")
     return job
+
+
+@app.get("/fonts/{name}")
+def get_font(name: str) -> FileResponse:
+    if name not in FONT_FILES:
+        _not_found("Font")
+    return FileResponse(FONT_FILES[name], media_type="font/ttf")
 
 
 if WEB_DIR.is_dir():
