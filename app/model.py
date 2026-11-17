@@ -46,6 +46,7 @@ class Video(BaseModel):
     error: str | None = None
     words: list[Word] = []
     heatmap: list[dict] = []
+    comments: list[dict] = []  # top comments: {text, likes, times}; only YouTube links have them
     chapters: list[dict] = []
     created_at: str = ""
     options: dict = {}  # what the user asked for when adding it: max_clips, min_s, max_s, direction
@@ -71,6 +72,7 @@ class Clip(BaseModel):
     description: str = ""
     score: float = 0
     retention: float | None = None
+    mentions: int | None = None  # comments whose timestamps point into this clip
     status: Literal["new", "kept", "discarded"] = "new"
     framed: bool = False  # automatic framing has run for this clip
     mezz_start_frame: int | None = None  # source frames kept in clips/<n>/mezz.mp4 once the full video is cleaned up

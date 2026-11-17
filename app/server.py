@@ -223,7 +223,7 @@ def get_video(video_id: str) -> dict[str, Any]:
     clips = []
     for c in library.load_clips(video_id):
         first, last = words.get(c.first_word), words.get(c.last_word)
-        clips.append({**c.model_dump(include={"index", "title", "hook", "description", "score", "retention", "status",
+        clips.append({**c.model_dump(include={"index", "title", "hook", "description", "score", "retention", "mentions", "status",
                                               "look", "shape"}),
                       "start": first.start if first else 0, "end": last.end if last else 0,
                       "exported": (library.clip_dir(video_id, c.index) / "export.mp4").is_file()})

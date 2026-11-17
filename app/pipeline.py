@@ -7,6 +7,7 @@ from typing import Callable
 
 from app import library
 from app.ai import ask_claude
+from app.comments import fetch_comments
 from app.framing import auto_framing
 from app.media import make_proxy, normalise_upload, probe, remove_stale_partials
 from app.model import Clip, Video, Word
@@ -93,6 +94,20 @@ def analyse(video_id: str, log: LogFn) -> Video:
                 "duration": float(info.get("duration") or 0), "heatmap": list(info.get("heatmap") or []),
                 "language": (code or info.get("language") or "en").split("-")[0],
                 "options": {**video.options, "caption_code": code}})
+            library.save_video(video)
+
+        if video.url and not video.options.get("comments_read"):
+            video = _stage(video, "Reading comments", log)
+            try:
+                comments = fetch_comments(video.url, video.duration)
+                pointed = [c for c in comments if c["times"]]
+                top = sorted(comments, key=lambda c: -c["likes"])[:60]
+                keep = pointed + [c for c in top if c not in pointed]
+                log(f"Read {len(comments)} comments, {len(pointed)} point at a moment")
+            except Exception as error:  # comments off or blocked: carry on without them
+                log(f"Could not read comments ({str(error)[:120]}); continuing without them")
+                keep = []
+            video = video.model_copy(update={"comments": keep, "options": {**video.options, "comments_read": True}})
             library.save_video(video)
 
         source = folder / "source.mp4"

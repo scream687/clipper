@@ -3,6 +3,7 @@
 from typing import Callable
 
 from app.model import Clip, Video, Word
+from app.comments import comment_note, mentions_in
 from app.retention import pick_peaks, score_range
 from app.sentences import split_sentences
 
@@ -40,6 +41,10 @@ def build_prompt(video: Video, sentences: list[list[Word]], min_s: int, max_s: i
         replay = ("\nViewers replay these moments most (YouTube 'Most replayed'): "
                   + ", ".join(f"{_clock(p['time'])} ({p['value']:.2f})" for p in peaks)
                   + ". Prefer segments containing them when the content is strong.\n")
+    comments = comment_note(video.comments)
+    if comments:
+        replay += ("\nWhat viewers said (treat timestamp mentions as strong evidence of a great moment, and use liked "
+                   "comments to judge which topics and lines will travel):\n" + comments + "\n")
     steer = f"\nUSER DIRECTION (highest priority, follow it): {direction.strip()}\n" if direction.strip() else ""
     lines = [f"[s{i} {_clock(s[0].start)}] {' '.join(w.display for w in s)}" for i, s in enumerate(sentences)]
     return (
@@ -92,7 +97,8 @@ def moments_to_clips(video: Video, sentences: list[list[Word]], moments: list[di
         clips.append(Clip(index=len(clips), first_word=sentences[first][0].id, last_word=sentences[last][-1].id,
                           shape=shape, title=moment["title"].strip()[:80], hook=moment["hook"].strip(),
                           description=moment["description"].strip(), score=moment["score"],
-                          retention=score_range(video.heatmap, start, end)))
+                          retention=score_range(video.heatmap, start, end),
+                          mentions=mentions_in(video.comments, start, end) if video.comments else None))
         if len(clips) >= max_clips:
             break
     return clips

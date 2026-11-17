@@ -205,7 +205,8 @@ function clipRow(video, clip) {
     replay.querySelector(".replay-bar span").style.transform = `scaleX(${Math.min(clip.retention / REPLAY_BAR_FULL, 1)})`;
     replay.querySelector(".replay-label").textContent = `${clip.retention.toFixed(1)}× replay`;
   }
-  node.querySelector(".clip-status").textContent = clip.exported ? "Exported" : `Score ${clip.score}/10`;
+  const said = clip.mentions ? ` · ${clip.mentions} comment${clip.mentions === 1 ? "" : "s"} point here` : "";
+  node.querySelector(".clip-status").textContent = (clip.exported ? "Exported" : `Score ${clip.score}/10`) + said;
   if (clip.status === "discarded") node.classList.add("is-discarded");
   return node;
 }
