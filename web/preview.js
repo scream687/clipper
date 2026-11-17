@@ -36,7 +36,9 @@ export class Preview {
     videos.forEach((video, which) => this.watch(video, which));
   }
 
-  load(src) {
+  // `offset` is the source time the file starts at: 0 for the proxy, the window start for a kept clip window.
+  load(src, offset = 0) {
+    this.offset = offset;
     this.videos.forEach((v) => { if (v.getAttribute("src") !== src) v.src = src; });
   }
 
@@ -46,7 +48,7 @@ export class Preview {
     this.plan = plan;
     let offset = 0;
     this.segs = plan.segments.map((s) => {
-      const seg = { start: s.start_frame / plan.fps, end: s.end_frame / plan.fps, offset };
+      const seg = { start: s.start_frame / plan.fps - (this.offset || 0), end: s.end_frame / plan.fps - (this.offset || 0), offset };
       offset += seg.end - seg.start;
       return seg;
     });
@@ -69,7 +71,7 @@ export class Preview {
   }
 
   sourceTime() {
-    return this.locate(this.time ?? 0).src;
+    return this.locate(this.time ?? 0).src + (this.offset || 0);
   }
 
   // ----- playback -----

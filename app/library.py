@@ -57,6 +57,17 @@ def save_clip(video_id: str, clip: Clip) -> None:
     write_json(clip_dir(video_id, clip.index) / "clip.json", clip)
 
 
+def media_for(video_id: str, clip: Clip) -> tuple[Path, int]:
+    """The file to render or preview this clip from, and the source frame that file starts at."""
+    source = video_dir(video_id) / "source.mp4"
+    if source.is_file():
+        return source, 0
+    mezz = clip_dir(video_id, clip.index) / "mezz.mp4"
+    if mezz.is_file() and clip.mezz_start_frame is not None:
+        return mezz, clip.mezz_start_frame
+    raise FileNotFoundError("The video for this clip is no longer on disk.")
+
+
 def list_videos() -> list[Video]:
     if not VIDEOS.is_dir():
         return []

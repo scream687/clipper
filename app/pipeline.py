@@ -7,7 +7,7 @@ from typing import Callable
 from app import library
 from app.ai import ask_claude
 from app.framing import auto_framing
-from app.media import make_proxy, probe
+from app.media import make_proxy, probe, remove_stale_partials
 from app.model import Video, Word
 from app.moments import find_clips
 from app.youtube import download_caption_words, download_source, fetch_info, find_orig_caption_code, has_word_timing
@@ -34,6 +34,7 @@ def _stage(video: Video, name: str, log: LogFn) -> Video:
 def analyse(video_id: str, log: LogFn) -> Video:
     video = library.load_video(video_id)
     folder = library.video_dir(video_id)
+    remove_stale_partials(folder)  # left by a server that was killed mid-stage
     try:
         if not video.channel:
             video = _stage(video, "Reading video details", log)

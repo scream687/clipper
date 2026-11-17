@@ -73,6 +73,8 @@ class Clip(BaseModel):
     retention: float | None = None
     status: Literal["new", "kept", "discarded"] = "new"
     framed: bool = False  # automatic framing has run for this clip
+    mezz_start_frame: int | None = None  # source frames kept in clips/<n>/mezz.mp4 once the full video is cleaned up
+    mezz_end_frame: int | None = None
 
 
 def write_json(path: Path, model: BaseModel) -> None:

@@ -85,6 +85,17 @@ def test_export_without_source_explains_why(client, stored):
     assert response.status_code == 409 and "no longer on disk" in response.json()["detail"]
 
 
+def test_export_all_with_every_clip_discarded_reports_why(client, stored):
+    from app import queue
+    library.save_clip(stored.id, library.load_clip(stored.id, 0).model_copy(update={"status": "discarded"}))
+    job = client.post(f"/api/videos/{stored.id}/export-all").json()["job"]
+    import time
+    for _ in range(50):
+        if queue.get(job)["status"] in ("done", "error"): break
+        time.sleep(0.1)
+    assert queue.get(job)["status"] == "error" and "discarded" in queue.get(job)["error"]
+
+
 def test_only_the_two_caption_fonts_are_served(client):
     assert client.get("/fonts/arial-black.ttf").status_code == 200
     assert client.get("/fonts/..%2F..%2Fetc%2Fpasswd").status_code == 404

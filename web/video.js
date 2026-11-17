@@ -11,6 +11,12 @@ let timer = null;
 let current = null;
 
 export function wireVideo() {
+  el("zip-export").addEventListener("click", async () => {
+    try {
+      const { job } = await api(`/api/videos/${current}/export-all`, "POST");
+      followZip(job, current);
+    } catch (error) { showAlert(error.message); }
+  });
   el("video-retry").addEventListener("click", async () => {
     try { await api(`/api/videos/${current}/retry`, "POST"); await showVideo(current); } catch (error) { showAlert(error.message); }
   });
@@ -45,7 +51,30 @@ export async function showVideo(id) {
   el("video-graph-wrap").hidden = !video.clips.length;
   if (video.clips.length) drawGraph(video);
   el("clip-list").replaceChildren(...video.clips.map((c) => clipRow(video, c)));
+  el("zip-bar").hidden = !video.clips.length || busy;
+  el("zip-download").hidden = !video.zip_ready;
+  el("zip-download").href = `/api/videos/${id}/clips.zip`;
+  if (video.zip_job) followZip(video.zip_job, id);
   if (busy) timer = setTimeout(() => showVideo(id), POLL_MS);
+}
+
+let zipFollowing = null;
+
+async function followZip(jobId, id) {
+  if (zipFollowing === jobId) return;
+  zipFollowing = jobId;
+  el("zip-export").disabled = true;
+  for (;;) {
+    let job;
+    try { job = await api(`/api/jobs/${jobId}`); } catch (error) { showAlert(error.message); break; }
+    if (current !== id) break;
+    el("zip-state").textContent = job.status === "queued" ? "Waiting for other exports…" : (job.log.at(-1) || "Exporting…");
+    if (job.status === "done") { el("zip-state").textContent = "Zip ready."; el("zip-download").hidden = false; break; }
+    if (job.status === "error") { el("zip-state").textContent = ""; showAlert(job.error); break; }
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  el("zip-export").disabled = false;
+  zipFollowing = null;
 }
 
 function svg(name, attrs) {

@@ -35,11 +35,17 @@ export async function showEditor(videoId, index) {
   document.title = `${body.clip.title || "Clip"} · Clipper`;
   el("editor-title").textContent = body.clip.title || "Untitled clip";
   preview.pause();
-  preview.load(`/api/videos/${videoId}/proxy.mp4`);
+  if (!body.media.url) showAlert("The video for this clip is no longer on disk, so it cannot be previewed.");
+  else preview.load(body.media.url, body.media.offset);
   preview.setPlan(body.plan);
   fillForm();
   renderTranscript();
   showExportState(body.exported, body.job);
+  showDiscard();
+}
+
+function showDiscard() {
+  el("discard").textContent = state.clip.status === "discarded" ? "Restore clip" : "Discard clip";
 }
 
 // ---------- form ----------
@@ -289,6 +295,10 @@ function wireControls() {
     edit(readForm(), { now: instant });
   });
   el("export").addEventListener("click", exportClip);
+  el("discard").addEventListener("click", () => {
+    edit({ status: state.clip.status === "discarded" ? "new" : "discarded" }, { now: true });
+    showDiscard();
+  });
   el("copy-title").addEventListener("click", (e) => copyText(e.currentTarget, state.clip.title));
   el("copy-description").addEventListener("click", (e) => copyText(e.currentTarget, state.clip.description));
   wireCropDrag();

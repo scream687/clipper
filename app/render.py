@@ -10,6 +10,7 @@ from typing import Callable
 
 from app import FFMPEG
 from app.ass import build_ass
+from app.media import partial_path
 from app.plan import FONT_DIR, Plan
 
 VIDEO_BITRATE = "10M"
@@ -69,17 +70,20 @@ def _audio_chain(plan: Plan) -> str:
             f"[speech][beep]amix=inputs=2:normalize=0:duration=first[a]")
 
 
-def render(plan: Plan, source: Path, out: Path, log: Callable[[str], None]) -> Path:
+def render(plan: Plan, source: Path, out: Path, log: Callable[[str], None], frame_offset: int = 0) -> Path:
+    """`frame_offset` is the source frame that `source` starts at (0 for the full video, the window start for a mezzanine)."""
     if not plan.segments:
         raise RuntimeError("This clip has no words left to render.")
     work = out.parent
     work.mkdir(parents=True, exist_ok=True)
     (work / "captions.ass").write_text(build_ass(plan), encoding="utf-8")
-    first, last = plan.segments[0].start_frame, plan.segments[-1].end_frame
+    first, last = plan.segments[0].start_frame - frame_offset, plan.segments[-1].end_frame - frame_offset
+    if first < 0:
+        raise RuntimeError("This clip now reaches outside the part of the video that was kept.")
     # Seek half a frame early so the first decoded frame is exactly `first`.
     start, end = max(0.0, (first - 0.5) / plan.fps), (last + 0.5) / plan.fps
     graph = _video_chain(plan, work) + ";" + _audio_chain(plan)
-    partial = out.with_suffix(".partial.mp4")
+    partial = partial_path(out)
     cmd = [FFMPEG, "-y", "-v", "error", "-ss", f"{start:.6f}", "-to", f"{end:.6f}", "-i", str(source),
            "-filter_complex", graph, "-map", "[v]", "-map", "[a]",
            "-c:v", "h264_videotoolbox", "-b:v", VIDEO_BITRATE, "-c:a", "aac", "-b:a", "192k", "-ar", "48000",

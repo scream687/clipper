@@ -74,6 +74,11 @@
         <div class="graph-axis" id="video-graph-axis" aria-hidden="true"></div>
         <figcaption id="video-graph-caption" class="hint"></figcaption>
       </figure>
+      <div class="zip-bar" id="zip-bar" hidden>
+        <button type="button" class="solid-button" id="zip-export">Export all as zip</button>
+        <a class="quiet-button" id="zip-download" hidden>Download zip</a>
+        <p class="hint" id="zip-state" role="status"></p>
+      </div>
       <ol class="clip-list" id="clip-list"></ol>
     </section>
 
@@ -152,6 +157,7 @@
               <a class="quiet-button" id="download" hidden download>Download</a>
               <button type="button" class="quiet-button" id="copy-title">Copy title</button>
               <button type="button" class="quiet-button" id="copy-description">Copy description</button>
+              <button type="button" class="quiet-button" id="discard">Discard clip</button>
             </div>
             <p class="hint" id="export-state" role="status"></p>
           </section>

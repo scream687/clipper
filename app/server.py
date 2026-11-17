@@ -2,6 +2,7 @@
 
 import json
 import os
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -12,7 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app import DATA_DIR, ROOT, library, queue
+from app import DATA_DIR, ROOT, cleanup, library, queue
 from app.model import Clip, CropKey, FramingMode, Look, Shape, Video
 from app.pipeline import analyse, create_from_youtube
 from app.plan import FONTS, build_plan
@@ -36,7 +37,14 @@ SECURITY_HEADERS = {
     "Cache-Control": "no-cache",
 }
 
-app = FastAPI(title="Clipper", docs_url=None, redoc_url=None)
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    cleanup.resume_unfinished(_analyse_job)  # finish analyses a restart interrupted
+    cleanup.start_cleanup_timer()
+    yield
+
+
+app = FastAPI(title="Clipper", docs_url=None, redoc_url=None, lifespan=lifespan)
 
 
 def is_youtube_url(url: str) -> bool:
@@ -191,8 +199,10 @@ def get_video(video_id: str) -> dict[str, Any]:
                                               "look", "shape"}),
                       "start": first.start if first else 0, "end": last.end if last else 0,
                       "exported": (library.clip_dir(video_id, c.index) / "export.mp4").is_file()})
+    zip_job = queue.active_for(f"{video_id}/zip")
     return {**_summary(video), "heatmap": video.heatmap, "language": video.language,
-            "has_proxy": (library.video_dir(video_id) / "proxy.mp4").is_file(), "clips": clips}
+            "has_proxy": (library.video_dir(video_id) / "proxy.mp4").is_file(), "clips": clips,
+            "zip_ready": (library.video_dir(video_id) / "clips.zip").is_file(), "zip_job": zip_job["id"] if zip_job else None}
 
 
 @app.get("/api/videos/{video_id}/words")
@@ -241,12 +251,31 @@ def _plan_for(video: Video, clip: Clip) -> dict[str, Any]:
     return build_plan(video, clip, handle=load_settings().get("handle", "")).model_dump()
 
 
+def _media(video: Video, clip: Clip) -> dict[str, Any]:
+    """Where the preview plays from: the proxy while the full video exists, the kept window after cleanup."""
+    if (library.video_dir(video.id) / "proxy.mp4").is_file():
+        return {"url": f"/api/videos/{video.id}/proxy.mp4", "offset": 0.0, "window": None}
+    if clip.mezz_start_frame is not None:
+        return {"url": f"/api/videos/{video.id}/clips/{clip.index}/media.mp4", "offset": clip.mezz_start_frame / video.fps,
+                "window": [clip.mezz_start_frame / video.fps, clip.mezz_end_frame / video.fps]}
+    return {"url": None, "offset": 0.0, "window": None}
+
+
 @app.get("/api/videos/{video_id}/clips/{index}")
 def get_clip(video_id: str, index: int) -> dict[str, Any]:
     video, clip = get_video_or_404(video_id), get_clip_or_404(video_id, index)
     export = library.clip_dir(video_id, index) / "export.mp4"
     return {"clip": clip.model_dump(), "plan": _plan_for(video, clip), "exported": export.is_file(),
-            "job": (queue.active_for(f"{video_id}/{index}") or {}).get("id")}
+            "media": _media(video, clip), "job": (queue.active_for(f"{video_id}/{index}") or {}).get("id")}
+
+
+@app.get("/api/videos/{video_id}/clips/{index}/media.mp4")
+def get_clip_media(video_id: str, index: int) -> FileResponse:
+    get_video_or_404(video_id); get_clip_or_404(video_id, index)
+    path = library.clip_dir(video_id, index) / "mezz.mp4"
+    if not path.is_file():
+        _not_found("Clip video")
+    return FileResponse(path, media_type="video/mp4")
 
 
 @app.put("/api/videos/{video_id}/clips/{index}")
@@ -260,6 +289,12 @@ def edit_clip(video_id: str, index: int, body: ClipEdit) -> dict[str, Any]:
         raise HTTPException(422, "Cuts and corrections must be inside the clip.")
     if set(range(body.first_word, body.last_word + 1)) <= set(body.cut_word_ids):
         raise HTTPException(422, "A clip needs at least one word that is not cut.")
+    window = _media(video, clip)["window"]
+    if window:
+        words = {w.id: w for w in video.words}
+        if words[body.first_word].start < window[0] or words[body.last_word].end > window[1]:
+            raise HTTPException(422, "The full video was cleaned up after 14 days, so this clip can only be "
+                                     "trimmed within the part that was kept.")
     updated = clip.model_copy(update=body.model_dump())
     library.save_clip(video_id, updated)
     return {"clip": updated.model_dump(), "plan": _plan_for(video, updated)}
@@ -268,9 +303,10 @@ def edit_clip(video_id: str, index: int, body: ClipEdit) -> dict[str, Any]:
 @app.post("/api/videos/{video_id}/clips/{index}/export")
 def export_clip(video_id: str, index: int) -> dict[str, str]:
     video, clip = get_video_or_404(video_id), get_clip_or_404(video_id, index)
-    source = library.video_dir(video_id) / "source.mp4"
-    if not source.is_file():
-        raise HTTPException(409, "The full video is no longer on disk, so this clip cannot be exported.")
+    try:
+        source, offset = library.media_for(video_id, clip)
+    except FileNotFoundError as error:
+        raise HTTPException(409, f"{error} This clip cannot be exported.") from error
     subject = f"{video_id}/{index}"
     if queue.active_for(subject):
         raise HTTPException(409, "This clip is already being exported.")
@@ -278,7 +314,7 @@ def export_clip(video_id: str, index: int) -> dict[str, str]:
     out = library.clip_dir(video_id, index) / "export.mp4"
 
     def work(log):
-        render(plan, source, out, log)
+        render(plan, source, out, log, frame_offset=offset)
         library.save_clip(video_id, library.load_clip(video_id, index).model_copy(update={"status": "kept"}))
         return {"video_id": video_id, "index": index, "exported_at": datetime.now().isoformat(timespec="seconds")}
 
@@ -293,6 +329,27 @@ def download_export(video_id: str, index: int, download: bool = False) -> FileRe
         _not_found("Export")
     name = f"{video.id}_{clip.index:02d}.mp4" if download else None
     return FileResponse(path, media_type="video/mp4", filename=name)
+
+
+@app.post("/api/videos/{video_id}/export-all")
+def export_all(video_id: str) -> dict[str, str]:
+    get_video_or_404(video_id)
+    subject = f"{video_id}/zip"
+    if queue.active_for(subject):
+        raise HTTPException(409, "This video's clips are already being exported.")
+    handle = load_settings().get("handle", "")
+    work = lambda log: {"video_id": video_id, "zip": cleanup.export_all(video_id, handle, log).name}
+    return {"job": queue.submit("export", "export-all", subject, work)}
+
+
+@app.get("/api/videos/{video_id}/clips.zip")
+def download_zip(video_id: str) -> FileResponse:
+    video = get_video_or_404(video_id)
+    path = library.video_dir(video_id) / "clips.zip"
+    if not path.is_file():
+        _not_found("Zip")
+    name = "".join(ch for ch in video.title if ch.isalnum() or ch in " -_").strip()[:60] or video.id
+    return FileResponse(path, media_type="application/zip", filename=f"{name} clips.zip")
 
 
 # ---------- jobs, fonts, page ----------
