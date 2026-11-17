@@ -46,6 +46,7 @@ class Video(BaseModel):
     error: str | None = None
     words: list[Word] = []
     heatmap: list[dict] = []
+    loud: list[int] = []      # seconds where the audio is well above this video's normal level
     comments: list[dict] = []  # top comments: {text, likes, times}; only YouTube links have them
     chapters: list[dict] = []
     created_at: str = ""

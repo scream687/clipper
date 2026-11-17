@@ -46,7 +46,13 @@ def build_prompt(video: Video, sentences: list[list[Word]], min_s: int, max_s: i
         replay += ("\nWhat viewers said (treat timestamp mentions as strong evidence of a great moment, and use liked "
                    "comments to judge which topics and lines will travel):\n" + comments + "\n")
     steer = f"\nUSER DIRECTION (highest priority, follow it): {direction.strip()}\n" if direction.strip() else ""
-    lines = [f"[s{i} {_clock(s[0].start)}] {' '.join(w.display for w in s)}" for i, s in enumerate(sentences)]
+    loud = set(video.loud)
+    is_loud = lambda s: any(t in loud for t in range(int(s[0].start), int(s[-1].end) + 1))
+    lines = [f"[s{i} {_clock(s[0].start)}]{' (LOUD)' if is_loud(s) else ''} {' '.join(w.display for w in s)}"
+             for i, s in enumerate(sentences)]
+    if loud:
+        replay += ("\n(LOUD) marks sentences where the audio got much louder than usual: laughing, shouting, "
+                   "big reactions. Treat them as hints of strong moments, not proof.\n")
     return (
         f"Video: {video.title}\nChannel: {video.channel}\n{replay}{steer}\n"
         f"Pick up to {max_clips} standalone moments that would work as vertical short clips, best first. "
