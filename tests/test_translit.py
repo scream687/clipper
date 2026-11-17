@@ -35,3 +35,13 @@ def test_ai_failure_still_gives_roman_text():
         raise RuntimeError("limit reached")
     out = translit.romanize(["नमस्ते"], ask)
     assert out["नमस्ते"] and not translit.needs_roman(out["नमस्ते"])
+
+
+def test_sentences_are_converted_in_context_and_word_counts_are_kept():
+    def ask(prompt, schema, system):
+        return {"sentences": [{"s": 0, "words": ["I", "think", "aap"]}, {"s": 2, "words": ["only one"]}]}
+    out = translit.romanize_in_context([["आई", "थिंक", "आप"], ["already", "english"], ["वो", "आई"]],
+                                       lambda p, s, y: ask(p, s, y) if "s0" in p else {"items": []})
+    assert out[0] == ["I", "think", "aap"]
+    assert out[1] == ["already", "english"]
+    assert len(out[2]) == 2 and not any(translit.needs_roman(w) for w in out[2])  # wrong count -> word-by-word fallback

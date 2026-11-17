@@ -62,6 +62,8 @@ def _prompt(batch: list[str]) -> str:
             "on WhatsApp and Instagram (e.g. नमस्ते -> namaste, खरीदने -> kharidne, बहुत -> bahut, क्यों -> kyun).\n"
             "English words written in Devanagari must come back in normal English spelling "
             "(प्रॉपर्टी -> property, हेल्थ -> health, जेनरेशन -> generation).\n"
+            "Short Hindi words stay Hindi and are never swapped for an English look-alike "
+            "(सी -> si, से -> se, की -> ki, तो -> to, ना -> na, ऑफ़ -> of only when it is the English word 'of').\n"
             "Keep any punctuation attached exactly where it is. Use lowercase unless it is a name.\n"
             "Return one item per input line with the same number i.\n\n" + lines)
 
@@ -85,3 +87,51 @@ def romanize(texts: list[str], ask: AskFn, log: Callable[[str], None] = lambda m
             cache[word] = roman if roman and not needs_roman(roman) else fallback(word)
         _save_cache(cache)
     return {t: cache[t] for t in texts if t in cache}
+
+
+SENTENCE_BATCH = 120
+CONTEXT_SCHEMA = {
+    "type": "object",
+    "properties": {"sentences": {"type": "array", "items": {
+        "type": "object", "properties": {"s": {"type": "integer"}, "words": {"type": "array", "items": {"type": "string"}}},
+        "required": ["s", "words"], "additionalProperties": False}}},
+    "required": ["sentences"], "additionalProperties": False,
+}
+
+
+def _context_prompt(batch: list[tuple[int, list[str]]]) -> str:
+    lines = "\n".join(f"s{i}: " + " | ".join(words) for i, words in batch)
+    return ("Each line is one spoken sentence from a Hinglish podcast, split into words by ' | '. Rewrite every word in "
+            "Roman letters the way Indians type Hinglish on WhatsApp and Instagram, using the sentence to decide what "
+            "each word is: English words said in Devanagari become normal English (आई थिंक -> I think, पास as in exam "
+            "-> pass), Hindi words stay Hindi (आई as in came -> aayi, पास as in near -> paas, सी -> si). Words already "
+            "in Roman letters stay as they are. Keep punctuation attached. Lowercase except names and 'I'.\n"
+            "Return each sentence number with EXACTLY the same number of words, in the same order.\n\n" + lines)
+
+
+def romanize_in_context(sentences: list[list[str]], ask: AskFn, log: Callable[[str], None] = lambda m: None) -> list[list[str]]:
+    """Roman text per word, decided with the whole sentence as context. Sentences without Devanagari are
+    returned unchanged; any sentence the AI answers with the wrong word count falls back to word-by-word."""
+    result = [list(s) for s in sentences]
+    todo = [(i, s) for i, s in enumerate(sentences) if any(needs_roman(w) for w in s)]
+    fixed = 0
+    for start in range(0, len(todo), SENTENCE_BATCH):
+        batch = todo[start:start + SENTENCE_BATCH]
+        log(f"Writing Hinglish captions {min(start + SENTENCE_BATCH, len(todo))}/{len(todo)} sentences")
+        try:
+            answer = ask(_context_prompt(batch), CONTEXT_SCHEMA, SYSTEM)
+        except Exception as error:  # fall back below rather than losing captions
+            log(f"AI conversion failed ({str(error)[:120]}); using word-by-word spelling for this batch")
+            answer = {"sentences": []}
+        got = {item["s"]: item["words"] for item in answer.get("sentences", []) if isinstance(item.get("s"), int)}
+        for i, words in batch:
+            roman = got.get(i)
+            if roman and len(roman) == len(words) and not any(needs_roman(r) for r in roman):
+                result[i] = [r.strip() or w for r, w in zip(roman, words)]
+                fixed += 1
+    leftovers = sorted({w for s in result for w in s if needs_roman(w)})
+    if leftovers:
+        mapping = romanize(leftovers, ask, log)
+        result = [[mapping.get(w, w) for w in s] for s in result]
+    log(f"Hinglish captions: {fixed} sentences in context, {len(leftovers)} words word-by-word")
+    return result

@@ -12,7 +12,8 @@ from app.media import make_proxy, normalise_upload, probe, remove_stale_partials
 from app.model import Clip, Video, Word
 from app.moments import find_clips
 from app.transcribe import transcribe
-from app.translit import romanize
+from app.sentences import split_sentences
+from app.translit import romanize_in_context
 from app.youtube import download_caption_words, download_source, fetch_info, find_orig_caption_code, has_word_timing
 
 LogFn = Callable[[str], None]
@@ -117,9 +118,11 @@ def analyse(video_id: str, log: LogFn) -> Video:
         if not video.words:
             video = _stage(video, "Reading the transcript", log)
             raw = _transcript(video, source, folder, log)
-            romans = romanize([w["word"] for w in raw], ask_claude, log)
-            words = [Word(id=i, text=w["word"], display=romans.get(w["word"], w["word"]), start=w["start"], end=w["end"])
-                     for i, w in enumerate(raw)]
+            words = [Word(id=i, text=w["word"], display=w["word"], start=w["start"], end=w["end"]) for i, w in enumerate(raw)]
+            sentences = split_sentences(words)
+            romans = romanize_in_context([[w.text for w in s] for s in sentences], ask_claude, log)
+            display = {w.id: r for s, rs in zip(sentences, romans) for w, r in zip(s, rs)}
+            words = [w.model_copy(update={"display": display[w.id]}) for w in words]
             video = video.model_copy(update={"words": words})
             library.save_video(video)
 
