@@ -307,7 +307,7 @@ function wireControls() {
   el("copy-description").addEventListener("click", (e) => copyText(e.currentTarget, [state.clip.description, state.clip.hashtags].filter(Boolean).join("\n\n")));
   el("emoji-suggest").addEventListener("click", async (e) => {
     const button = e.currentTarget;
-    button.disabled = true; button.textContent = "Asking Claude…";
+    button.disabled = true; button.textContent = "Asking the AI…";
     clearTimeout(saveTimer);
     await save();
     try {

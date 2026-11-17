@@ -13,16 +13,14 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app import DATA_DIR, ROOT, cleanup, library, queue
+from app import ROOT, SETTINGS_FILE, ai, channels, cleanup, library, queue
 from app.model import Clip, CropKey, FramingMode, Look, Shape, Video
-from app.ai import ask_claude
 from app.emoji import is_emoji
 from app.moments import clean_hashtags, find_clips
 from app.pipeline import add_clips, analyse, create_from_upload, create_from_youtube
 from app.plan import FONTS, build_plan
 from app.render import render
 
-SETTINGS_FILE = DATA_DIR / "settings.json"
 WEB_DIR = ROOT / "web"
 YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
 LOCAL_HOSTS = {"127.0.0.1", "localhost"}
@@ -94,6 +92,7 @@ def get_clip_or_404(video_id: str, index: int) -> Clip:
 
 class SettingsIn(BaseModel):
     handle: str = Field(default="", max_length=60)
+    channels: list[str] | None = Field(default=None, max_length=50)
 
 
 def load_settings() -> dict[str, Any]:
@@ -114,13 +113,82 @@ def save_settings(settings: dict[str, Any]) -> None:
 
 @app.get("/api/settings")
 def get_settings() -> dict[str, Any]:
-    return {"handle": load_settings().get("handle", "")}
+    settings = load_settings()
+    return {"handle": settings.get("handle", ""), "channels": settings.get("channels", channels.DEFAULT_CHANNELS)}
 
 
 @app.put("/api/settings")
 def put_settings(body: SettingsIn) -> dict[str, Any]:
-    save_settings({**load_settings(), "handle": body.handle.strip()})
+    update = {"handle": body.handle.strip()}
+    if body.channels is not None:
+        update["channels"] = channels.clean_channels(body.channels)
+    save_settings({**load_settings(), **update})
     return get_settings()
+
+
+class AIIn(BaseModel):
+    provider: str
+    base_url: str = Field(default="", max_length=300)
+    api_key: str = Field(default="", max_length=500)
+    model: str = Field(default="", max_length=200)
+
+    @field_validator("provider")
+    @classmethod
+    def known_provider(cls, value: str) -> str:
+        if value not in ai.PROVIDERS:
+            raise ValueError("Unknown AI provider.")
+        return value
+
+
+def ai_base_url(body: AIIn) -> str:
+    """Preset providers keep their own address; only Ollama and custom APIs take one from the page."""
+    url = body.base_url.strip() if body.provider in ai.EDITABLE_URL else ai.PROVIDERS[body.provider]["base_url"]
+    if body.provider != ai.CLAUDE_CODE and (urlparse(url).scheme not in ("http", "https") or not urlparse(url).hostname):
+        raise HTTPException(422, "The API address must be a full http:// or https:// URL.")
+    return url
+
+
+@app.get("/api/ai")
+def get_ai() -> dict[str, Any]:
+    """The picked provider and model. Keys never leave the server; `key_urls` says which addresses have one."""
+    config = load_settings().get("ai", {})
+    return {"provider": config.get("provider", ai.CLAUDE_CODE), "model": config.get("model", ai.CLAUDE_MODEL),
+            "base_url": config.get("base_url", ""), "key_urls": sorted(config.get("keys", {})),
+            "providers": [{"id": key, **value} for key, value in ai.PROVIDERS.items()]}
+
+
+@app.put("/api/ai")
+def put_ai(body: AIIn) -> dict[str, Any]:
+    url = ai_base_url(body)
+    model = body.model.strip() or (ai.CLAUDE_MODEL if body.provider == ai.CLAUDE_CODE else "")
+    if not model:
+        raise HTTPException(422, "Pick a model first.")
+    settings = load_settings()
+    keys = settings.get("ai", {}).get("keys", {})
+    if body.api_key.strip():
+        keys = {**keys, url: body.api_key.strip()}
+    save_settings({**settings, "ai": {"provider": body.provider, "model": model, "base_url": url, "keys": keys}})
+    return get_ai()
+
+
+@app.post("/api/ai/models")
+def ai_models(body: AIIn) -> list[dict[str, Any]]:
+    """Ask the provider which models it offers. Uses the typed key, else the one saved for this address."""
+    url = ai_base_url(body)
+    key = body.api_key.strip() or load_settings().get("ai", {}).get("keys", {}).get(url, "")
+    try:
+        return ai.list_models(body.provider, url, key)
+    except ai.AIUnavailable as error:
+        raise HTTPException(502, str(error)) from error
+
+
+@app.get("/api/channels")
+def watched_channels() -> list[dict[str, Any]]:
+    """Latest uploads of the watched channels; `added` marks the ones already in the library."""
+    added = {v.url.split("v=", 1)[-1].split("&", 1)[0] for v in library.list_videos() if "v=" in v.url}
+    added |= {v.url.rsplit("/", 1)[-1].split("?", 1)[0] for v in library.list_videos() if "youtu.be/" in v.url}
+    result = channels.latest_for(get_settings()["channels"])
+    return [{**c, "videos": [{**v, "added": v["id"] in added} for v in c["videos"]]} for c in result]
 
 
 # ---------- videos ----------
@@ -360,13 +428,13 @@ def suggest_emojis(video_id: str, index: int) -> dict[str, Any]:
               "words where an iOS emoji above the captions would add punch (money, health, shock, laughter, key nouns), "
               "spread across the clip and at least 3 seconds apart. Choose one fitting standard emoji for each.\n\n" + listing)
     try:
-        answer = ask_claude(prompt, EMOJI_SCHEMA, "You are a short-form video editor. Return only the requested JSON.")
+        answer = ai.ask_ai(prompt, EMOJI_SCHEMA, "You are a short-form video editor. Return only the requested JSON.")
     except Exception as error:
-        raise HTTPException(503, f"Claude could not suggest emojis right now: {str(error)[:200]}") from error
+        raise HTTPException(503, f"The AI could not suggest emojis right now: {str(error)[:200]}") from error
     picks = {e["word_id"]: e["emoji"].strip() for e in answer.get("emojis", [])
              if e.get("word_id") in ids and is_emoji(e.get("emoji", "").strip())}
     if not picks:
-        raise HTTPException(502, "Claude did not return usable emojis. Try again.")
+        raise HTTPException(502, "The AI did not return usable emojis. Try again.")
     updated = clip.model_copy(update={"emoji_words": picks, "show_emoji": True})
     library.save_clip(video_id, updated)
     return {"clip": updated.model_dump(), "plan": _plan_for(video, updated)}
@@ -424,7 +492,7 @@ def find_moment(video_id: str, body: FindIn) -> dict[str, str]:
         direction = (f"The user is looking for this specific moment: {body.query.strip()}. Return only moments that "
                      "match it, best match first; return none if nothing matches.")
         try:
-            clips = find_clips(video, ask_claude, min_s=o.get("min_s", 20), max_s=o.get("max_s", 60), max_clips=3,
+            clips = find_clips(video, ai.ask_ai, min_s=o.get("min_s", 20), max_s=o.get("max_s", 60), max_clips=3,
                                direction=direction)
         except RuntimeError as error:
             raise RuntimeError("Claude found nothing matching that description.") from error

@@ -68,6 +68,15 @@ main { padding: 0 var(--gutter) var(--space-section); max-width: 90rem; margin: 
 .settings { margin: var(--space-4) var(--gutter) 0; }
 .settings-form { display: flex; flex-wrap: wrap; align-items: end; gap: var(--space-4); margin-top: var(--space-3); }
 .settings-form .field { flex: 1 1 18rem; }
+.ai-form { margin-top: var(--space-5); padding-top: var(--space-4); border-top: 1px solid var(--color-line); }
+.ai-heading { flex: 1 0 100%; font-size: var(--text-base); }
+.ai-heading small { font-weight: 400; color: var(--color-muted); font-size: var(--text-small); margin-left: var(--space-2); }
+.model-facts {
+  flex: 1 0 100%; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--space-1) var(--space-4);
+  margin: 0; font-size: var(--text-small);
+}
+.model-facts dt { color: var(--color-muted); text-transform: capitalize; }
+.model-facts dd { margin: 0; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 
 /* ---------- controls ---------- */
 .solid-button, .quiet-button {

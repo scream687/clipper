@@ -5,6 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
+SETTINGS_FILE = DATA_DIR / "settings.json"
 
 # Homebrew's default ffmpeg is built without libass/freetype, so it cannot burn
 # captions or credit text. The keg-only ffmpeg-full can.

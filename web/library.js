@@ -9,11 +9,49 @@ let timer = null;
 export function wireLibrary() {
   el("add-form").addEventListener("submit", addVideo);
   el("video-list").addEventListener("click", deleteVideo);
+  el("watch-list").addEventListener("click", addWatched);
 }
 
 export async function showLibrary() {
   document.title = "Clipper";
   await refresh();
+  loadChannels();
+}
+
+async function loadChannels() {
+  el("watch").hidden = false;
+  el("watch-state").textContent = "Checking your channels…";
+  let channels;
+  try { channels = await api("/api/channels"); } catch (error) { el("watch-state").textContent = error.message; return; }
+  if (!channels.length) { el("watch").hidden = true; return; }
+  const broken = channels.filter((c) => c.error).map((c) => c.handle);
+  el("watch-state").textContent = broken.length ? `Could not read ${broken.join(", ")}.` : "";
+  el("watch-list").replaceChildren(...channels.flatMap((c) => c.videos.slice(0, 3).map((v) => watchRow(c, v))));
+}
+
+function watchRow(channel, video) {
+  const node = el("watch-row").content.firstElementChild.cloneNode(true);
+  node.querySelector(".video-link").href = video.url;
+  node.querySelector(".video-name").textContent = video.title;
+  const views = video.views ? `${Intl.NumberFormat("en", { notation: "compact" }).format(video.views)} views` : "";
+  node.querySelector(".video-sub").textContent = [channel.channel, video.duration ? clock(video.duration) : "", views].filter(Boolean).join(" · ");
+  const add = node.querySelector(".watch-add");
+  add.dataset.url = video.url;
+  add.disabled = video.added;
+  if (video.added) add.textContent = "In library";
+  return node;
+}
+
+async function addWatched(event) {
+  const button = event.target.closest(".watch-add");
+  if (!button || button.disabled) return;
+  const f = el("add-form").elements;
+  button.disabled = true; button.textContent = "Adding…";
+  try {
+    const { id } = await api("/api/videos", "POST", { url: button.dataset.url, shape: f.shape.value, max_clips: Number(f.max_clips.value),
+      min_s: Number(f.min_s.value), max_s: Number(f.max_s.value), direction: f.direction.value.trim() });
+    location.hash = `#/video/${id}`;
+  } catch (error) { showAlert(error.message); button.disabled = false; button.textContent = "Find clips"; }
 }
 
 export function leaveLibrary() { clearTimeout(timer); }

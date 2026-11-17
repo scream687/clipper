@@ -41,7 +41,7 @@ async function search(event) {
   if (event.submitter?.value === "ask") {
     try {
       const { job } = await api(`/api/videos/${id}/find`, "POST", { query });
-      el("search-state").textContent = "Claude is looking for that moment…";
+      el("search-state").textContent = "The AI is looking for that moment…";
       for (;;) {
         const j = await api(`/api/jobs/${job}`);
         if (current !== id) return;

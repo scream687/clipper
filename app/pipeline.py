@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Callable
 
 from app import library
-from app.ai import AIUnavailable, ask_claude
+from app.ai import AIUnavailable, ask_ai
 from app.loudness import loud_seconds, loudness_clips, measure as measure_loudness
 from app.comments import fetch_comments
 from app.framing import auto_framing
@@ -136,7 +136,7 @@ def analyse(video_id: str, log: LogFn) -> Video:
             raw = _transcript(video, source, folder, log)
             words = [Word(id=i, text=w["word"], display=w["word"], start=w["start"], end=w["end"]) for i, w in enumerate(raw)]
             sentences = split_sentences(words)
-            romans = romanize_in_context([[w.text for w in s] for s in sentences], ask_claude, log)
+            romans = romanize_in_context([[w.text for w in s] for s in sentences], ask_ai, log)
             display = {w.id: r for s, rs in zip(sentences, romans) for w, r in zip(s, rs)}
             words = [w.model_copy(update={"display": display[w.id]}) for w in words]
             video = video.model_copy(update={"words": words})
@@ -150,16 +150,16 @@ def analyse(video_id: str, log: LogFn) -> Video:
             log(f"{len(loud)} loud seconds")
 
         if not library.load_clips(video_id):
-            video = _stage(video, "Finding moments with Claude", log)
+            video = _stage(video, "Finding moments with AI", log)
             o = video.options
             try:
-                clips = find_clips(video, ask_claude, min_s=o.get("min_s", 20), max_s=o.get("max_s", 60),
+                clips = find_clips(video, ask_ai, min_s=o.get("min_s", 20), max_s=o.get("max_s", 60),
                                    max_clips=o.get("max_clips", 30), direction=o.get("direction", ""))
             except AIUnavailable as error:
-                log(f"Claude is unavailable ({str(error)[:120]}); picking clips by loudness instead")
+                log(f"The AI is unavailable ({str(error)[:120]}); picking clips by loudness instead")
                 clips = loudness_clips(video, o.get("min_s", 20), o.get("max_s", 60), o.get("max_clips", 30))
                 if not clips:
-                    raise RuntimeError("Claude is unavailable and this video has no loud moments to fall back on. "
+                    raise RuntimeError("The AI is unavailable and this video has no loud moments to fall back on. "
                                        "Try again later.") from error
             for clip in clips:
                 library.save_clip(video_id, clip)
