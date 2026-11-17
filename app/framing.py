@@ -135,11 +135,11 @@ def sample_faces(proxy: Path, start: float, end: float) -> list[tuple[float, flo
             faces: list[Face] = []
             for face in result.face_landmarks:
                 xs = [p.x for p in face]; ys = [p.y for p in face]
-                height = max(ys) - min(ys)
-                if height <= 0:
+                face_h = max(ys) - min(ys)
+                if face_h <= 0:
                     continue
-                mouth = abs(face[LOWER_LIP].y - face[UPPER_LIP].y) / height
-                faces.append((min(max((min(xs) + max(xs)) / 2, 0.0), 1.0), (max(xs) - min(xs)) * height, mouth))
+                mouth = abs(face[LOWER_LIP].y - face[UPPER_LIP].y) / face_h
+                faces.append((min(max((min(xs) + max(xs)) / 2, 0.0), 1.0), (max(xs) - min(xs)) * face_h, mouth))
             biggest = max((f[1] for f in faces), default=0)
             # Background faces (audience, posters) are ignored: keep faces at least a quarter the size of the largest.
             samples.append((start + n / SAMPLE_FPS, [f for f in faces if f[1] >= biggest / 4]))

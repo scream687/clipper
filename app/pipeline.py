@@ -43,9 +43,10 @@ def _stage(video: Video, name: str, log: LogFn) -> Video:
 
 
 def _transcript(video: Video, source, folder, log: LogFn) -> list[dict]:
-    """English YouTube videos with word-timed captions use them; everything else goes through Whisper."""
+    """YouTube's original-language auto-captions (word-timed) win when they exist: on Hinglish podcasts they
+    transcribe what was said, while Whisper turbo tends to translate into English. Uploads use Whisper."""
     code = video.options.get("caption_code")
-    if video.url and code and code.startswith("en"):
+    if video.url and code:
         raw = download_caption_words(video.url, code, folder / "work")
         if has_word_timing(raw):
             return raw

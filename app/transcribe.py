@@ -18,6 +18,7 @@ VAD_MODEL = ROOT / "models" / "ggml-silero-v5.1.2.bin"
 MAX_WORD_S = 1.2
 LAST_WORD_S = 0.5
 LogFn = Callable[[str], None]
+HINGLISH_PROMPT = "हाँ तो आज हम बात करेंगे health के बारे में, ये generation कितना healthy है? मुझे लगता है कि लोग अब aware हो रहे हैं।"
 
 
 def words_from_whisper_json(path: Path) -> list[dict]:
@@ -73,8 +74,11 @@ def transcribe(source: Path, work: Path, language: str, log: LogFn) -> list[dict
     work.mkdir(parents=True, exist_ok=True)
     wav = extract_audio(source, work / "audio.wav")
     out = work / "whisper"
+    # -mc 0: no text carried between segments, which stops repetition loops on long Hindi audio.
     cmd = [whisper, "-m", str(MODEL), "-f", str(wav), "-l", language, "-ojf", "-of", str(out),
-           "-dtw", "large.v3.turbo", "-t", "8", "-np", "-pp"]
+           "-dtw", "large.v3.turbo", "-t", "8", "-mc", "0", "-np", "-pp"]
+    if language == "hi":  # a Hinglish prompt keeps turbo transcribing instead of translating to English
+        cmd += ["--prompt", HINGLISH_PROMPT]
     if VAD_MODEL.exists():
         cmd += ["--vad", "-vm", str(VAD_MODEL)]
     log(f"Transcribing with Whisper ({language})")
