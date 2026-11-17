@@ -52,7 +52,8 @@ function showDiscard() {
 function fillForm() {
   const f = el("look-form").elements, c = state.clip;
   ["look", "shape", "framing"].forEach((name) => { f[name].value = c[name]; });
-  ["show_hook", "show_handle", "show_credit", "swear_filter"].forEach((name) => { f[name].checked = c[name]; });
+  ["show_hook", "show_handle", "show_credit", "swear_filter", "show_emoji"].forEach((name) => { f[name].checked = c[name]; });
+  el("emoji-list").textContent = Object.values(c.emoji_words).join(" ");
   ["hook", "title", "description"].forEach((name) => { f[name].value = c[name]; });
 }
 
@@ -61,7 +62,7 @@ function readForm() {
   return {
     look: f.look.value, shape: f.shape.value, framing: f.framing.value,
     show_hook: f.show_hook.checked, show_handle: f.show_handle.checked, show_credit: f.show_credit.checked,
-    swear_filter: f.swear_filter.checked, hook: f.hook.value, title: f.title.value, description: f.description.value,
+    swear_filter: f.swear_filter.checked, show_emoji: f.show_emoji.checked, hook: f.hook.value, title: f.title.value, description: f.description.value,
   };
 }
 
@@ -79,6 +80,7 @@ async function save() {
     first_word: c.first_word, last_word: c.last_word, cut_word_ids: c.cut_word_ids, text_fixes: c.text_fixes,
     look: c.look, shape: c.shape, framing: c.framing, manual_keys: c.manual_keys, hook: c.hook,
     show_hook: c.show_hook, show_handle: c.show_handle, show_credit: c.show_credit, swear_filter: c.swear_filter,
+    emoji_words: c.emoji_words, show_emoji: c.show_emoji,
     title: c.title, description: c.description, status: c.status,
   };
   try {
@@ -301,6 +303,18 @@ function wireControls() {
   });
   el("copy-title").addEventListener("click", (e) => copyText(e.currentTarget, state.clip.title));
   el("copy-description").addEventListener("click", (e) => copyText(e.currentTarget, state.clip.description));
+  el("emoji-suggest").addEventListener("click", async (e) => {
+    const button = e.currentTarget;
+    button.disabled = true; button.textContent = "Asking Claude…";
+    clearTimeout(saveTimer);
+    await save();
+    try {
+      const body = await api(`/api/videos/${state.videoId}/clips/${state.index}/emojis`, "POST");
+      state.clip = body.clip; state.plan = body.plan; preview.setPlan(body.plan); fillForm();
+    } catch (error) { showAlert(error.message); }
+    button.disabled = false; button.textContent = "Suggest emojis";
+  });
+  el("emoji-clear").addEventListener("click", () => { edit({ emoji_words: {} }, { now: true }); el("emoji-list").textContent = ""; });
   wireCropDrag();
   document.addEventListener("keydown", (e) => {
     if (el("view-editor").hidden || !state) return;

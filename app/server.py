@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from app import DATA_DIR, ROOT, cleanup, library, queue
 from app.model import Clip, CropKey, FramingMode, Look, Shape, Video
 from app.ai import ask_claude
+from app.emoji import is_emoji
 from app.moments import find_clips
 from app.pipeline import add_clips, analyse, create_from_upload, create_from_youtube
 from app.plan import FONTS, build_plan
@@ -263,9 +264,18 @@ class ClipEdit(BaseModel):
     show_handle: bool = True
     show_credit: bool = True
     swear_filter: bool = False
+    emoji_words: dict[int, str] = Field(default={}, max_length=50)
+    show_emoji: bool = True
     title: str = Field(default="", max_length=MAX_TEXT)
     description: str = Field(default="", max_length=1000)
     status: str = Field(default="new", pattern="^(new|kept|discarded)$")
+
+    @field_validator("emoji_words")
+    @classmethod
+    def emojis_are_emoji(cls, value: dict[int, str]) -> dict[int, str]:
+        if not all(is_emoji(e) for e in value.values()):
+            raise ValueError("Only single emoji can be added to a word")
+        return value
 
     @field_validator("text_fixes")
     @classmethod
@@ -313,7 +323,7 @@ def edit_clip(video_id: str, index: int, body: ClipEdit) -> dict[str, Any]:
     if body.first_word not in ids or body.last_word not in ids or body.first_word > body.last_word:
         raise HTTPException(422, "The clip's start must be a word before its end.")
     inside = set(range(body.first_word, body.last_word + 1))
-    if not set(body.cut_word_ids) <= inside or not set(body.text_fixes) <= inside:
+    if not set(body.cut_word_ids) <= inside or not set(body.text_fixes) <= inside or not set(body.emoji_words) <= inside:
         raise HTTPException(422, "Cuts and corrections must be inside the clip.")
     if set(range(body.first_word, body.last_word + 1)) <= set(body.cut_word_ids):
         raise HTTPException(422, "A clip needs at least one word that is not cut.")
@@ -324,6 +334,34 @@ def edit_clip(video_id: str, index: int, body: ClipEdit) -> dict[str, Any]:
             raise HTTPException(422, "The full video was cleaned up after 14 days, so this clip can only be "
                                      "trimmed within the part that was kept.")
     updated = clip.model_copy(update=body.model_dump())
+    library.save_clip(video_id, updated)
+    return {"clip": updated.model_dump(), "plan": _plan_for(video, updated)}
+
+
+EMOJI_SCHEMA = {"type": "object", "properties": {"emojis": {"type": "array", "maxItems": 8, "items": {
+    "type": "object", "properties": {"word_id": {"type": "integer"}, "emoji": {"type": "string"}},
+    "required": ["word_id", "emoji"], "additionalProperties": False}}}, "required": ["emojis"], "additionalProperties": False}
+
+
+@app.post("/api/videos/{video_id}/clips/{index}/emojis")
+def suggest_emojis(video_id: str, index: int) -> dict[str, Any]:
+    video, clip = get_video_or_404(video_id), get_clip_or_404(video_id, index)
+    cut = set(clip.cut_word_ids)
+    ids = [w for w in range(clip.first_word, clip.last_word + 1) if w not in cut]
+    words = {w.id: w for w in video.words}
+    listing = " ".join(f"[{i}]{clip.text_fixes.get(i, words[i].display)}" for i in ids)
+    prompt = ("This is the transcript of a short vertical video clip; each word has its id in brackets. Pick 3 to 6 "
+              "words where an iOS emoji above the captions would add punch (money, health, shock, laughter, key nouns), "
+              "spread across the clip and at least 3 seconds apart. Choose one fitting standard emoji for each.\n\n" + listing)
+    try:
+        answer = ask_claude(prompt, EMOJI_SCHEMA, "You are a short-form video editor. Return only the requested JSON.")
+    except Exception as error:
+        raise HTTPException(503, f"Claude could not suggest emojis right now: {str(error)[:200]}") from error
+    picks = {e["word_id"]: e["emoji"].strip() for e in answer.get("emojis", [])
+             if e.get("word_id") in ids and is_emoji(e.get("emoji", "").strip())}
+    if not picks:
+        raise HTTPException(502, "Claude did not return usable emojis. Try again.")
+    updated = clip.model_copy(update={"emoji_words": picks, "show_emoji": True})
     library.save_clip(video_id, updated)
     return {"clip": updated.model_dump(), "plan": _plan_for(video, updated)}
 

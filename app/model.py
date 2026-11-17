@@ -68,6 +68,8 @@ class Clip(BaseModel):
     show_handle: bool = True
     show_credit: bool = True
     swear_filter: bool = False
+    emoji_words: dict[int, str] = {}  # word id -> emoji shown above the captions from that word
+    show_emoji: bool = True
     title: str = ""
     description: str = ""
     score: float = 0

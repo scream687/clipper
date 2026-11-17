@@ -8,8 +8,9 @@ import subprocess
 from pathlib import Path
 from typing import Callable
 
-from app import FFMPEG
+from app import DATA_DIR, FFMPEG
 from app.ass import build_ass
+from app.emoji import emoji_png
 from app.media import partial_path
 from app.plan import FONT_DIR, Plan
 
@@ -44,13 +45,26 @@ def _video_chain(plan: Plan, work: Path) -> str:
         return (f"{chain},split[bg][fg];"
                 f"[bg]scale={plan.width}:{plan.height}:force_original_aspect_ratio=increase,crop={plan.width}:{plan.height},gblur=sigma={FILL_BLUR}[bgb];"
                 f"[fg]scale={plan.width}:{plan.height}:force_original_aspect_ratio=decrease[fgf];"
-                f"[bgb][fgf]overlay=(W-w)/2:(H-h)/2,{ass},format=yuv420p[v]")
+                f"[bgb][fgf]overlay=(W-w)/2:(H-h)/2,{ass}[vb]")
     if plan.crop_w < plan.source_width or plan.crop_h < plan.source_height:
         (work / "crop.cmd").write_text(_crop_commands(plan))
         y = (plan.source_height - plan.crop_h) // 2
         chain += (f",sendcmd=f={_escape_filter_path(work / 'crop.cmd')},"
                   f"crop@c=w={plan.crop_w}:h={plan.crop_h}:x=0:y={y}")
-    return f"{chain},scale={plan.width}:{plan.height}:flags=lanczos,setsar=1,{ass},format=yuv420p[v]"
+    return f"{chain},scale={plan.width}:{plan.height}:flags=lanczos,setsar=1,{ass}[vb]"
+
+
+def _emoji_chain(plan: Plan, first_input: int, inputs: dict[str, int]) -> str:
+    """Overlay each emoji picture for its time window; `inputs` maps emoji -> ffmpeg input index."""
+    label = "vb"
+    parts = []
+    for n, event in enumerate(plan.emojis):
+        y = round(plan.emoji_y - plan.emoji_px / 2)
+        parts.append(f"[{label}][{inputs[event.emoji]}:v]overlay=x=(W-w)/2:y={y}:shortest=1:"
+                     f"enable='between(t,{event.start:.3f},{event.end:.3f})'[ve{n}]")
+        label = f"ve{n}"
+    parts.append(f"[{label}]format=yuv420p[v]")
+    return ";".join(parts)
 
 
 def _audio_chain(plan: Plan) -> str:
@@ -82,9 +96,14 @@ def render(plan: Plan, source: Path, out: Path, log: Callable[[str], None], fram
         raise RuntimeError("This clip now reaches outside the part of the video that was kept.")
     # Seek half a frame early so the first decoded frame is exactly `first`.
     start, end = max(0.0, (first - 0.5) / plan.fps), (last + 0.5) / plan.fps
-    graph = _video_chain(plan, work) + ";" + _audio_chain(plan)
+    distinct = list(dict.fromkeys(e.emoji for e in plan.emojis))
+    inputs = {emoji: index + 1 for index, emoji in enumerate(distinct)}
+    images: list[str] = []
+    for emoji in distinct:
+        images += ["-loop", "1", "-i", str(emoji_png(emoji, plan.emoji_px, DATA_DIR / "emoji"))]
+    graph = _video_chain(plan, work) + ";" + _emoji_chain(plan, 1, inputs) + ";" + _audio_chain(plan)
     partial = partial_path(out)
-    cmd = [FFMPEG, "-y", "-v", "error", "-ss", f"{start:.6f}", "-to", f"{end:.6f}", "-i", str(source),
+    cmd = [FFMPEG, "-y", "-v", "error", "-ss", f"{start:.6f}", "-to", f"{end:.6f}", "-i", str(source), *images,
            "-filter_complex", graph, "-map", "[v]", "-map", "[a]",
            "-c:v", "h264_videotoolbox", "-b:v", VIDEO_BITRATE, "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
            "-movflags", "+faststart", str(partial)]

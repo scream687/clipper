@@ -55,3 +55,11 @@ def test_render_reports_ffmpeg_failure_clearly(tmp_path):
     plan = build_plan(video(), Clip(index=0, first_word=0, last_word=3))
     with pytest.raises(RuntimeError, match="ffmpeg"):
         render(plan, tmp_path / "missing.mp4", tmp_path / "out.mp4", log=lambda m: None)
+
+
+def test_render_with_emojis_keeps_exact_length(source, tmp_path):
+    clip = Clip(index=0, first_word=0, last_word=17, cut_word_ids=[4], emoji_words={2: "💰", 9: "🔥", 12: "💰"})
+    plan = build_plan(video(), clip)
+    out = render(plan, source, tmp_path / "emoji.mp4", log=lambda m: None)
+    v, a = probe(out)
+    assert int(v["nb_read_frames"]) == round(plan.duration * FPS) and abs(float(a["duration"]) - plan.duration) < 0.03

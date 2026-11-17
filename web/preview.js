@@ -189,6 +189,10 @@ export class Preview {
     this.captionHost = document.createElement("div");
     this.overlay.append(this.captionHost);
     this.hookEl = null;
+    this.emojiEl = document.createElement("div");
+    this.emojiEl.className = "ov-emoji";
+    Object.assign(this.emojiEl.style, { top: `${p.emoji_y}px`, fontSize: `${Math.round(p.emoji_px * 1.0)}px` });
+    this.overlay.append(this.emojiEl);
     if (p.hook) {
       const hook = document.createElement("div");
       hook.className = "ov-hook";
@@ -217,6 +221,8 @@ export class Preview {
   drawOverlay(t) {
     const p = this.plan, s = p.style;
     if (this.hookEl) this.hookEl.hidden = !(t >= p.hook.start && t < p.hook.end);
+    const emoji = (p.emojis || []).find((e) => t >= e.start && t < e.end);
+    this.emojiEl.textContent = emoji ? emoji.emoji : "";
     const group = p.captions.find((g) => t >= g.start && t < g.end) || null;
     if (group !== this.group) {
       this.group = group;

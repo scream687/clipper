@@ -256,3 +256,6 @@ input[type="range"] { padding: 0; border: 0; background: none; accent-color: var
 .search-hit { display: grid; grid-template-columns: 4.5rem minmax(0, 1fr) auto; gap: var(--space-3); align-items: center; padding: var(--space-2) 0; border-bottom: 1px solid var(--color-line); }
 .search-hit mark { background: var(--color-signal); color: var(--color-signal-ink); border-radius: 0.2rem; padding: 0 0.15rem; }
 @media (max-width: 40rem) { .search-bar { grid-template-columns: 1fr 1fr; } .search-bar input { grid-column: 1 / -1; } }
+.ov-emoji { position: absolute; left: 50%; transform: translate(-50%, -50%); font-family: "Apple Color Emoji"; line-height: 1; }
+.emoji-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); }
+#emoji-list { font-size: 1.25rem; }

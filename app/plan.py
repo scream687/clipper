@@ -23,6 +23,8 @@ MARGIN_X = 80              # px kept clear at each side, at 1080 short side
 GROUP_PAUSE_S = 0.6        # a pause longer than this starts a new caption group
 GROUP_STICK_S = 0.3        # gaps shorter than this keep the previous group on screen
 HOOK_SECONDS = 4.0
+EMOJI_PX = 150             # emoji picture size at a 1080 short side
+EMOJI_HOLD_S = 1.6         # how long an emoji stays up (less if the next one arrives)
 BEEP_PAD_S = 0.08          # Whisper word edges are loose; widen beeps a little
 
 # Shared by the ASS writer and the CSS preview. Sizes are em sizes in px at a 1080 short side
@@ -65,6 +67,12 @@ class CaptionGroup(BaseModel):
     lines: list[Line]
 
 
+class EmojiEvent(BaseModel):
+    emoji: str
+    start: float
+    end: float
+
+
 class TextBlock(BaseModel):
     lines: list[str]
     start: float
@@ -93,6 +101,9 @@ class Plan(BaseModel):
     handle: str
     credit: str
     beeps: list[tuple[float, float]]
+    emojis: list[EmojiEvent] = []
+    emoji_px: int = EMOJI_PX
+    emoji_y: float = 0.0  # centre of the emoji, px from the top
 
     def crop_at(self, t: float) -> float:
         return interpolate(self.crop_keys, t)
@@ -295,7 +306,20 @@ def build_plan(video: Video, clip: Clip, handle: str = "") -> Plan:
                                      round(HOOK_STYLE["min_size"] * scale), safe_px, HOOK_STYLE["max_lines"])
         hook = TextBlock(lines=lines, start=0.0, end=min(HOOK_SECONDS, duration))
 
+    emojis: list[EmojiEvent] = []
+    if clip.show_emoji:
+        kept = {w.word_id: w for w in plan_words}
+        for wid in sorted(i for i in clip.emoji_words if i in kept):
+            if emojis and emojis[-1].end > kept[wid].start:
+                emojis[-1] = emojis[-1].model_copy(update={"end": kept[wid].start})
+            emojis.append(EmojiEvent(emoji=clip.emoji_words[wid], start=kept[wid].start,
+                                     end=min(duration, kept[wid].start + EMOJI_HOLD_S)))
+    emoji_px = round(EMOJI_PX * scale)
+    caption_line = line_height(look["font"], round(look["size"] * scale))
+    emoji_y = height * CAPTION_Y[clip.shape] - caption_line * look["max_lines"] / 2 - emoji_px * 0.7
+
     return Plan(
+        emojis=emojis, emoji_px=emoji_px, emoji_y=round(emoji_y),
         fps=fps, width=width, height=height, duration=duration, segments=segments, words=plan_words,
         captions=_caption_groups(plan_words, seg_of, look, safe_px, scale), look=clip.look,
         style={**look, "size": round(look["size"] * scale), "outline": round(look["outline"] * scale),

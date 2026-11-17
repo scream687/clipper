@@ -156,7 +156,13 @@
                 <label><input type="checkbox" name="show_handle"><span>@handle</span></label>
                 <label><input type="checkbox" name="show_credit"><span>Credit</span></label>
                 <label><input type="checkbox" name="swear_filter"><span>Bleep swearing</span></label>
+                <label><input type="checkbox" name="show_emoji"><span>Emojis</span></label>
               </fieldset>
+              <div class="emoji-actions">
+                <button type="button" class="quiet-button" id="emoji-suggest">Suggest emojis</button>
+                <button type="button" class="text-button" id="emoji-clear">Clear emojis</button>
+                <span class="hint" id="emoji-list"></span>
+              </div>
               <label class="field"><span>Hook headline</span><input name="hook" type="text" maxlength="300" autocomplete="off"></label>
               <label class="field"><span>Title</span><input name="title" type="text" maxlength="300" autocomplete="off"></label>
               <label class="field"><span>Description</span><textarea name="description" rows="2" maxlength="1000"></textarea></label>
