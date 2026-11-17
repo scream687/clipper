@@ -36,22 +36,34 @@ def _crop_commands(plan: Plan) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _fill_graph(plan: Plan, src: str, out: str) -> str:
+    """Whole frame scaled to fit, on a blurred copy of itself filling the output."""
+    return (f"[{src}]split[{src}bg][{src}fg];"
+            f"[{src}bg]scale={plan.width}:{plan.height}:force_original_aspect_ratio=increase,crop={plan.width}:{plan.height},gblur=sigma={FILL_BLUR}[{src}bgb];"
+            f"[{src}fg]scale={plan.width}:{plan.height}:force_original_aspect_ratio=decrease[{src}fgf];"
+            f"[{src}bgb][{src}fgf]overlay=(W-w)/2:(H-h)/2,setsar=1[{out}]")
+
+
 def _video_chain(plan: Plan, work: Path) -> str:
     first = plan.segments[0].start_frame
     keep = "+".join(f"between(n,{s.start_frame - first},{s.end_frame - first - 1})" for s in plan.segments)
     chain = f"[0:v]select='{keep}',setpts=N/({plan.fps})/TB"
     ass = f"ass=filename={_escape_filter_path(work / 'captions.ass')}:fontsdir={_escape_filter_path(FONT_DIR)}"
     if plan.framing == "fill":
-        return (f"{chain},split[bg][fg];"
-                f"[bg]scale={plan.width}:{plan.height}:force_original_aspect_ratio=increase,crop={plan.width}:{plan.height},gblur=sigma={FILL_BLUR}[bgb];"
-                f"[fg]scale={plan.width}:{plan.height}:force_original_aspect_ratio=decrease[fgf];"
-                f"[bgb][fgf]overlay=(W-w)/2:(H-h)/2,{ass}[vb]")
+        return f"{chain}[src];{_fill_graph(plan, 'src', 'fit')};[fit]{ass}[vb]"
+    crop = ""
     if plan.crop_w < plan.source_width or plan.crop_h < plan.source_height:
         (work / "crop.cmd").write_text(_crop_commands(plan))
         y = (plan.source_height - plan.crop_h) // 2
-        chain += (f",sendcmd=f={_escape_filter_path(work / 'crop.cmd')},"
-                  f"crop@c=w={plan.crop_w}:h={plan.crop_h}:x=0:y={y}")
-    return f"{chain},scale={plan.width}:{plan.height}:flags=lanczos,setsar=1,{ass}[vb]"
+        crop = (f"sendcmd=f={_escape_filter_path(work / 'crop.cmd')},"
+                f"crop@c=w={plan.crop_w}:h={plan.crop_h}:x=0:y={y},")
+    scaled = f"{crop}scale={plan.width}:{plan.height}:flags=lanczos,setsar=1"
+    if not plan.fit_spans:
+        return f"{chain},{scaled},{ass}[vb]"
+    # Faceless wide shots inside a cropped clip: overlay the whole-frame version only during those spans.
+    when = "+".join(f"between(t,{a:.6f},{b - 0.5 / plan.fps:.6f})" for a, b in plan.fit_spans)
+    return (f"{chain},split[src][raw];[src]{scaled}[cropped];{_fill_graph(plan, 'raw', 'fit')};"
+            f"[cropped][fit]overlay=0:0:enable='{when}',{ass}[vb]")
 
 
 def _emoji_chain(plan: Plan, first_input: int, inputs: dict[str, int]) -> str:

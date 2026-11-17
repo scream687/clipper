@@ -29,6 +29,7 @@ class CropKey(BaseModel):
     cx: float = Field(ge=0, le=1)  # crop centre, 0 = left edge of the frame, 1 = right edge
     cy: float = Field(default=0.5, ge=0, le=1)
     jump: bool = False             # True = hard cut to this position (speaker change), False = glide
+    fit: bool = False              # True = show the whole frame on a blurred fill until the next key (no face to follow)
 
 
 class Video(BaseModel):

@@ -7,6 +7,7 @@ import { Preview } from "./preview.js";
 const CONTEXT_WORDS = 80;     // transcript words shown outside the clip on each side
 const SAVE_DELAY_MS = 350;
 const KEY_MERGE_S = 0.4;      // a new manual crop key replaces keys this close to it
+const DRAG_MIN_PX = 4;        // pointer travel before a press counts as dragging the crop
 const POLL_MS = 1000;
 
 let state = null;             // { videoId, index, words, clip, plan, sel: {a, b} | null }
@@ -215,7 +216,8 @@ function wireCropDrag() {
     drag = { x: e.clientX, cx: preview.cropAt(preview.time ?? 0) };
   });
   stage.addEventListener("pointermove", (e) => {
-    if (!drag) return;
+    if (!drag || (!drag.moved && Math.abs(e.clientX - drag.x) < DRAG_MIN_PX)) return;
+    drag.moved = true;  // a click (or Chrome's zero-distance pointermove) must not pin the crop
     const p = state.plan, frac = (e.clientX - drag.x) / stage.clientWidth * (p.crop_w / p.source_width);
     preview.setCropOverride(Math.min(Math.max(drag.cx - frac, 0), 1));
   });

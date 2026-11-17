@@ -67,3 +67,19 @@ def test_a_brief_interjection_does_not_cause_a_cut():
 def test_single_face_is_followed_and_empty_frames_stay_empty():
     samples = [(0.0, [(0.4, 0.05, 0.02)]), (0.1, []), (0.2, [(0.42, 0.05, 0.03)])]
     assert choose_speaker(samples) == [(0.0, 0.4), (0.1, None), (0.2, 0.42)]
+
+
+def test_faceless_shot_after_a_camera_cut_shows_the_whole_frame():
+    # Close-up at 0.5 for 3 s, cut to a wide shot nobody's face is found in for 2 s, cut back to a face at 0.3.
+    samples = [(n / 10, 0.5) for n in range(30)] + [(n / 10, None) for n in range(30, 50)] + [(n / 10, 0.3) for n in range(50, 80)]
+    keys = keys_from_samples(samples, cuts=[3.0, 5.0])
+    fit = [k for k in keys if k.fit]
+    assert [k.t for k in fit] == [3.0]
+    after = [k for k in keys if k.t >= 5.0]
+    assert after[0].t == 5.0 and after[0].jump and not after[0].fit and abs(after[0].cx - 0.3) < 0.01
+
+
+def test_face_lost_without_a_cut_holds_the_crop():
+    # Speaker looks down for 2 s in the same shot: keep the crop where it was, no whole-frame flash.
+    samples = [(n / 10, 0.5) for n in range(30)] + [(n / 10, None) for n in range(30, 50)] + [(n / 10, 0.5) for n in range(50, 80)]
+    assert not any(k.fit for k in keys_from_samples(samples, cuts=[]))

@@ -142,3 +142,17 @@ def test_long_hook_shrinks_to_fit_instead_of_losing_words():
 
     assert " ".join(plan.hook.lines) == hook
     assert len(plan.hook.lines) <= 3
+
+
+def test_fit_keys_become_output_time_whole_frame_spans():
+    # Whole-frame span starts at 10.7 s, inside cut words 1-2 (10.5-11.4), and ends at the 12.0 s key.
+    keys = [CropKey(t=10.0, cx=0.5), CropKey(t=10.7, cx=0.5, jump=True, fit=True), CropKey(t=12.0, cx=0.3, jump=True)]
+    clip = Clip(index=0, first_word=0, last_word=9, cut_word_ids=[1, 2], auto_keys=keys, framing="crop")
+
+    plan = build_plan(video(), clip)
+
+    # The span starts where the second segment does (it begins inside the span) and ends at the 12.0 s key.
+    first, second = plan.segments
+    seg2_out = (first.end_frame - first.start_frame) / FPS
+    expected = (seg2_out, seg2_out + 12.0 - second.start_frame / FPS)
+    assert [(round(a, 3), round(b, 3)) for a, b in plan.fit_spans] == [tuple(round(v, 3) for v in expected)]

@@ -97,6 +97,7 @@ class Plan(BaseModel):
     crop_w: int
     crop_h: int
     crop_keys: list[CropKey]  # output time
+    fit_spans: list[tuple[float, float]] = []  # output time: whole frame on a blurred fill inside a cropped clip
     hook: TextBlock | None
     handle: str
     credit: str
@@ -121,6 +122,26 @@ def interpolate(keys: list[CropKey], t: float) -> float:
                 return before.cx
             return before.cx + (after.cx - before.cx) * (t - before.t) / (after.t - before.t)
     return keys[-1].cx
+
+
+def key_at(keys: list[CropKey], t: float) -> CropKey | None:
+    """The key in force at time t: the last one at or before t, else the first."""
+    if not keys:
+        return None
+    return next((k for k in reversed(keys) if k.t <= t), keys[0])
+
+
+def _fit_spans(keys: list[CropKey], duration: float) -> list[tuple[float, float]]:
+    """Output-time stretches where a fit key is in force (whole frame on a blurred fill)."""
+    spans = []
+    for key, after in zip(keys, [*keys[1:], None]):
+        end = after.t if after else duration
+        if key.fit and end > key.t:
+            if spans and abs(spans[-1][1] - key.t) < 1e-9:
+                spans[-1] = (spans[-1][0], end)
+            else:
+                spans.append((key.t, end))
+    return spans
 
 
 @lru_cache(maxsize=64)
@@ -287,7 +308,8 @@ def build_plan(video: Video, clip: Clip, handle: str = "") -> Plan:
     if keys:
         for index, seg in enumerate(segments):
             seg_start, seg_end = seg.start_frame / fps, seg.end_frame / fps
-            out_keys.append(CropKey(t=offsets[index], cx=interpolate(keys, seg_start), jump=index > 0))
+            out_keys.append(CropKey(t=offsets[index], cx=interpolate(keys, seg_start), jump=index > 0,
+                                    fit=key_at(keys, seg_start).fit))
             for key in keys:
                 if seg_start < key.t < seg_end:
                     out_keys.append(key.model_copy(update={"t": to_out(index, key.t)}))
@@ -330,6 +352,7 @@ def build_plan(video: Video, clip: Clip, handle: str = "") -> Plan:
         caption_y=CAPTION_Y[clip.shape], safe_width_px=safe_px, framing=clip.framing,
         source_width=video.width, source_height=video.height, crop_w=crop_w, crop_h=crop_h,
         crop_keys=out_keys, hook=hook,
+        fit_spans=_fit_spans(out_keys, duration) if clip.framing == "crop" and crop_w < video.width else [],
         handle=handle.strip() if clip.show_handle else "",
         credit=f"Credit: {video.channel}" if clip.show_credit and video.channel else "",
         beeps=beeps,

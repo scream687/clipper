@@ -3,7 +3,9 @@
 Samples the preview copy ten times a second with MediaPipe. With one face, the
 crop follows it. With several (a podcast two-shot), it follows whoever's mouth is
 moving, switching only after the new speaker has talked for a while. The chosen
-positions become a small number of crop keys (source time).
+positions become a small number of crop keys (source time). When a camera cut
+lands on a shot with no findable face (a wide shot of the set), the clip shows
+the whole frame on a blurred fill until a face is back.
 """
 
 import statistics
@@ -29,11 +31,12 @@ SMOOTH_WINDOW = 15     # samples in the median filter (about 1.5 s)
 DEADBAND = 0.06        # ignore moves smaller than 6 % of the frame width
 JUMP = 0.20            # a move this large between samples is a camera change: cut, don't glide
 MIN_FACE_SHARE = 0.25  # fewer samples with a face than this means no usable face: show the whole frame
+CUT_DIFF = 25.0        # mean grey-level change between samples above this is a camera cut (motion stays under ~13)
+MIN_FIT_S = 0.5        # a faceless wide shot shorter than this keeps the crop
 
 
-def keys_from_samples(samples: list[tuple[float, float | None]]) -> list[CropKey]:
-    """(source time, face centre or None) -> crop keys. Pure, so it is unit-tested."""
-    seen = [(t, x) for t, x in samples if x is not None]
+def _face_keys(seen: list[tuple[float, float]]) -> list[CropKey]:
+    """Smoothed crop keys for one stretch of samples that all have a face."""
     if not seen:
         return []
     xs = [x for _, x in seen]
@@ -45,6 +48,43 @@ def keys_from_samples(samples: list[tuple[float, float | None]]) -> list[CropKey
             continue
         jump = abs(x - smooth[i - 1]) >= JUMP
         keys.append(CropKey(t=t, cx=round(x, 4), jump=jump))
+    return keys
+
+
+def _fit_spans(samples: list[tuple[float, float | None]], cuts: list[float]) -> list[tuple[float, float]]:
+    """Stretches with no face that begin at a camera cut (a wide shot), as (cut time, time a face is back).
+
+    A face lost without a cut is the speaker looking down: the crop holds instead.
+    ponytail: edges land on the 0.1 s sample grid, so a switch can be one or two frames off the real
+    camera cut; search the frames between samples for the exact cut if that ever shows."""
+    spans, start = [], None
+    for t, x in [*samples, (float("inf"), 0.0)]:
+        if x is None:
+            start = t if start is None else start
+            continue
+        if start is not None:
+            cut = min((c for c in cuts if start - 1.5 / SAMPLE_FPS <= c < t), default=None)
+            if cut is not None and t - cut >= MIN_FIT_S:
+                spans.append((cut, t))
+            start = None
+    return spans
+
+
+def keys_from_samples(samples: list[tuple[float, float | None]], cuts: list[float] = ()) -> list[CropKey]:
+    """(source time, face centre or None) and camera-cut times -> crop keys. Pure, so it is unit-tested."""
+    if not any(x is not None for _, x in samples):
+        return []
+    spans = _fit_spans(samples, list(cuts))
+    keys: list[CropKey] = []
+    lo = float("-inf")
+    for n, (fit_from, fit_to) in enumerate([*spans, (float("inf"), None)]):
+        part = _face_keys([(t, x) for t, x in samples if x is not None and lo <= t < fit_from])
+        if part and n > 0:
+            part[0] = part[0].model_copy(update={"jump": True})
+        keys += part
+        if fit_to is not None:
+            keys.append(CropKey(t=fit_from, cx=keys[-1].cx if keys else 0.5, jump=True, fit=True))
+            lo = fit_to
     return keys
 
 
@@ -108,8 +148,8 @@ def _ensure_model() -> Path:
     return MODEL
 
 
-def sample_faces(proxy: Path, start: float, end: float) -> list[tuple[float, float | None]]:
-    """Centre x (0..1) of the face to follow at SAMPLE_FPS between start and end (source seconds)."""
+def sample_faces(proxy: Path, start: float, end: float) -> tuple[list[tuple[float, float | None]], list[float]]:
+    """Centre x (0..1) of the face to follow at SAMPLE_FPS between start and end (source seconds), and camera-cut times."""
     import mediapipe as mp
     from mediapipe.tasks import python
     from mediapipe.tasks.python import vision
@@ -127,10 +167,14 @@ def sample_faces(proxy: Path, start: float, end: float) -> list[tuple[float, flo
     options = vision.FaceLandmarkerOptions(base_options=python.BaseOptions(model_asset_path=str(_ensure_model())),
                                            running_mode=vision.RunningMode.VIDEO, num_faces=6,
                                            min_face_detection_confidence=0.4)
-    samples = []
+    samples, cuts, previous = [], [], None
     with vision.FaceLandmarker.create_from_options(options) as landmarker:
         for n in range(count):
             frame = np.frombuffer(probe.stdout, dtype=np.uint8, count=frame_bytes, offset=n * frame_bytes).reshape(height, SAMPLE_WIDTH, 3)
+            grey = frame[::10, ::10].mean(axis=2)
+            if previous is not None and float(np.abs(grey - previous).mean()) > CUT_DIFF:
+                cuts.append(start + n / SAMPLE_FPS)
+            previous = grey
             result = landmarker.detect_for_video(mp.Image(image_format=mp.ImageFormat.SRGB, data=frame), int(n * 1000 / SAMPLE_FPS))
             faces: list[Face] = []
             for face in result.face_landmarks:
@@ -143,7 +187,7 @@ def sample_faces(proxy: Path, start: float, end: float) -> list[tuple[float, flo
             biggest = max((f[1] for f in faces), default=0)
             # Background faces (audience, posters) are ignored: keep faces at least a quarter the size of the largest.
             samples.append((start + n / SAMPLE_FPS, [f for f in faces if f[1] >= biggest / 4]))
-    return choose_speaker(samples)
+    return choose_speaker(samples), cuts
 
 
 def _aspect(proxy: Path) -> float:
@@ -154,8 +198,8 @@ def _aspect(proxy: Path) -> float:
 
 def auto_framing(proxy: Path, start: float, end: float) -> tuple[str, list[CropKey]]:
     """('crop', keys) when there is a face to follow, otherwise ('fill', []) to show the whole frame."""
-    samples = sample_faces(proxy, start, end)
+    samples, cuts = sample_faces(proxy, start, end)
     with_face = sum(1 for _, x in samples if x is not None)
     if not samples or with_face / len(samples) < MIN_FACE_SHARE:
         return "fill", []
-    return "crop", keys_from_samples(samples)
+    return "crop", keys_from_samples(samples, cuts)

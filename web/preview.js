@@ -141,16 +141,18 @@ export class Preview {
     this.overlay.style.width = `${p.width}px`;
     this.overlay.style.height = `${p.height}px`;
     this.overlay.style.transform = `scale(${this.scale})`;
-    if (p.framing === "fill") {
-      const fit = Math.min(boxW / p.source_width, boxH / p.source_height);
-      this.videoBox = { w: p.source_width * fit, h: p.source_height * fit, x: (boxW - p.source_width * fit) / 2, y: (boxH - p.source_height * fit) / 2, crop: false };
-    } else {
-      const k = boxW / p.crop_w;
-      this.videoBox = { w: p.source_width * k, h: p.source_height * k, x: 0, y: -((p.source_height - p.crop_h) / 2) * k, crop: true, k };
-    }
-    this.videos.forEach((v) => { v.style.width = `${this.videoBox.w}px`; v.style.height = `${this.videoBox.h}px`; });
-    this.fill.hidden = p.framing !== "fill";
+    const fit = Math.min(boxW / p.source_width, boxH / p.source_height);
+    this.fitBox = { w: p.source_width * fit, h: p.source_height * fit, x: (boxW - p.source_width * fit) / 2, y: (boxH - p.source_height * fit) / 2, crop: false };
+    const k = boxW / p.crop_w;
+    this.cropBox = { w: p.source_width * k, h: p.source_height * k, x: 0, y: -((p.source_height - p.crop_h) / 2) * k, crop: true, k };
+    this.videoBox = null;
     this.draw(this.time ?? 0, this.videos[this.active]);
+  }
+
+  // Whole frame on a blurred fill: the whole clip, or a faceless wide shot inside a cropped clip (unless the crop is being dragged).
+  fitAt(tOut) {
+    const p = this.plan;
+    return p.framing === "fill" || (this.cropOverride == null && p.fit_spans.some(([a, b]) => tOut >= a && tOut < b));
   }
 
   setCropOverride(cx) {
@@ -163,8 +165,13 @@ export class Preview {
   }
 
   draw(tOut, video) {
-    if (!this.plan || !this.videoBox) return;
-    const p = this.plan, box = this.videoBox;
+    if (!this.plan || !this.cropBox) return;
+    const p = this.plan, box = this.fitAt(tOut) ? this.fitBox : this.cropBox;
+    if (box !== this.videoBox) {
+      this.videoBox = box;
+      this.videos.forEach((v) => { v.style.width = `${box.w}px`; v.style.height = `${box.h}px`; });
+      this.fill.hidden = box.crop;
+    }
     let x = box.x;
     if (box.crop) {
       const left = Math.min(Math.max(this.cropAt(tOut) * p.source_width - p.crop_w / 2, 0), p.source_width - p.crop_w);

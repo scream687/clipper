@@ -13,7 +13,8 @@ instant preview, and export MP4s. Runs entirely on this Mac at http://127.0.0.1:
 2. **Video page**: progress while it is analysed, then the replay graph and the clips Claude picked. **Export all as zip** renders every clip that is not discarded.
 3. **Editor**: click a clip.
    - Transcript: click a word, shift-click a range. **Start here** `[`, **End here** `]`, **Cut words** `Delete`, **Fix word** `Enter`. Space plays.
-   - Drag the picture sideways to move the frame; **Reset framing** undoes that.
+   - The frame follows whoever is talking. When the camera cuts to a wide shot with no face it can follow, the clip shows the whole frame on a blurred fill until a face is back.
+   - Drag the picture sideways to move the frame (this pins it from that point on); **Reset framing** undoes that.
    - Looks: Highlight, Karaoke, Pop, Boxed. Hook headline, @handle (set in **Settings**), channel credit, swear bleep.
    - Every change saves itself; **Export MP4** renders the final file.
 
