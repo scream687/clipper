@@ -1,98 +1,62 @@
-"""End-to-end render check: one hand-written highlight, three reframe modes, no AI key.
+"""End-to-end check on a real YouTube video: analyse (download, proxy, transcript, Claude picks) and
+render the best clip in every caption look. Exits non-zero if any export disagrees with its plan.
 
-Run:   uv run python -m scripts.smoke [youtube_url]
-Exits non-zero if any clip is missing or has the wrong shape. Also writes a few
-still frames to data/smoke/frames/ so captions, hook text and framing can be eyeballed.
+Run:  uv run python -m scripts.smoke [youtube_url]
 """
 
 import json
-import shutil
 import subprocess
 import sys
+import time
 
-from app import DATA_DIR, FFMPEG, FFPROBE, cookies_path
-from yt_short_clipper_core.clip_processor import (
-    DEFAULT_LEAD_IN,
-    DEFAULT_TAIL_OUT,
-    process_selected_highlights,
-)
-from yt_short_clipper_core.subtitle_downloader import download_caption_words
+from app import FFMPEG, FFPROBE, library
+from app.pipeline import analyse, create_from_youtube
+from app.plan import LOOKS, build_plan
+from app.render import render
 
 DEFAULT_URL = "https://www.youtube.com/watch?v=arj7oStGLkU"
-START, END, RANGE_SECONDS = "00:01:00,000", "00:01:20,000", 20.0
-EXPECTED_SECONDS = RANGE_SECONDS + DEFAULT_LEAD_IN + DEFAULT_TAIL_OUT
-DURATION_TOLERANCE = 1.0
-OUTPUT_SIZE = (1080, 1920)
-MODES = [("face", "black"), ("centered", "black"), ("centered", "blurred")]
-FRAME_TIMES = (2.0, 12.0)  # one inside the hook window, one after it
 
 
-def probe(path: str) -> dict:
-    out = subprocess.run(
-        [FFPROBE, "-v", "error", "-show_entries",
-         "stream=codec_type,codec_name,width,height:format=duration", "-of", "json", path],
-        capture_output=True, text=True, check=True,
-    ).stdout
-    info = json.loads(out)
-    video = next(s for s in info["streams"] if s["codec_type"] == "video")
-    return {
-        "size": (video["width"], video["height"]),
-        "codec": video["codec_name"],
-        "has_audio": any(s["codec_type"] == "audio" for s in info["streams"]),
-        "duration": float(info["format"]["duration"]),
-    }
-
-
-def save_frame(clip: str, seconds: float, out_png: str) -> None:
-    subprocess.run(
-        [FFMPEG, "-y", "-v", "error", "-ss", str(seconds), "-i", clip,
-         "-frames:v", "1", "-vf", "scale=540:-1", out_png],
-        check=True,
-    )
+def frames_and_audio(path) -> tuple[int, float]:
+    out = json.loads(subprocess.run([FFPROBE, "-v", "error", "-count_frames", "-show_entries",
+                                     "stream=codec_type,nb_read_frames,duration", "-of", "json", str(path)],
+                                    capture_output=True, text=True, check=True).stdout)["streams"]
+    v = next(s for s in out if s["codec_type"] == "video"); a = next(s for s in out if s["codec_type"] == "audio")
+    return int(v["nb_read_frames"]), float(a["duration"])
 
 
 def main() -> int:
-    url = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_URL
-    session = DATA_DIR / "smoke"
-    shutil.rmtree(session, ignore_errors=True)
-    frames = session / "frames"
-    frames.mkdir(parents=True)
+    target = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_URL
+    started = time.time()
+    if target.startswith("http"):
+        video = create_from_youtube(target, {"max_clips": 10, "min_s": 20, "max_s": 60}, "9:16")
+    else:  # an existing video id: resume its analysis instead of downloading again
+        video = library.load_video(target)
+    video = analyse(video.id, log=lambda m: print(f"  {m}"))
+    clips = library.load_clips(video.id)
+    print(f"analysed in {time.time() - started:.0f}s: {len(video.words)} words, {len(clips)} clips")
+    for c in clips:
+        print(f"  #{c.index} score {c.score} replay {c.retention} | {c.title} | hook: {c.hook}")
 
-    words = download_caption_words(url, session, cookies_path(), log=print)
-    failures = [] if words else ["no word-timed caption track for this video"]
-
-    for index, (mode, background) in enumerate(MODES):
-        label = mode if mode == "face" else f"{mode}-{background}"
-        result = process_selected_highlights(
-            url=url,
-            highlights=[{
-                "start_time": START, "end_time": END,
-                "title": f"Smoke {label}", "description": "Smoke test clip",
-                "hook_text": "This is the hook text for the smoke test",
-                "_highlight_index": index,
-            }],
-            session_dir=str(session),
-            options={"reframeMode": mode, "centeredBackground": background,
-                     "addCaptions": True, "addHook": True, "addCreditWatermark": True},
-            ai={"hook_style": {"duration_seconds": 5.0},
-                "credit_watermark": {"text": "Credit: smoke test"}},
-            log=lambda message: print(f"  [{label}] {message}"),
-        )
-        clip = result["results"][0]["output_path"]
-        info = probe(clip)
-        print(f"{label}: {info}")
-        if info["size"] != OUTPUT_SIZE:
-            failures.append(f"{label}: size {info['size']}, expected {OUTPUT_SIZE}")
-        if not info["has_audio"]:
-            failures.append(f"{label}: no audio stream")
-        if abs(info["duration"] - EXPECTED_SECONDS) > DURATION_TOLERANCE:
-            failures.append(f"{label}: {info['duration']:.1f}s, expected about {EXPECTED_SECONDS:.1f}s")
-        for seconds in FRAME_TIMES:
-            save_frame(clip, seconds, str(frames / f"{label}_{int(seconds):02d}s.png"))
-
+    failures = []
+    best = clips[0]
+    cut = [best.first_word + 3, best.first_word + 4]  # also prove jump cuts work end to end
+    for look in LOOKS:
+        clip = best.model_copy(update={"look": look, "cut_word_ids": cut})
+        plan = build_plan(video, clip, handle="@clipper")
+        out = library.clip_dir(video.id, clip.index) / f"smoke_{look}.mp4"
+        t0 = time.time()
+        render(plan, library.video_dir(video.id) / "source.mp4", out, log=lambda m: None)
+        frames, audio = frames_and_audio(out)
+        expected = round(plan.duration * plan.fps)
+        print(f"{look}: {plan.duration:.2f}s rendered in {time.time() - t0:.1f}s, frames {frames}/{expected}, audio {audio:.3f}s")
+        if frames != expected or abs(audio - plan.duration) > 0.05:
+            failures.append(f"{look}: frames {frames} vs {expected}, audio {audio:.3f} vs {plan.duration:.3f}")
+        subprocess.run([FFMPEG, "-y", "-v", "error", "-ss", "1.5", "-i", str(out), "-frames:v", "1", "-vf", "scale=360:-1",
+                        str(out.with_suffix(".png"))], check=True)
     for failure in failures:
         print("FAIL:", failure)
-    print("SMOKE", "FAILED" if failures else "PASSED", f"- frames in {frames}")
+    print("SMOKE", "FAILED" if failures else "PASSED", "- video", video.id)
     return 1 if failures else 0
 
 
