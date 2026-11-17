@@ -8,14 +8,14 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app import DATA_DIR, ROOT, cleanup, library, queue
 from app.model import Clip, CropKey, FramingMode, Look, Shape, Video
-from app.pipeline import analyse, create_from_youtube
+from app.pipeline import analyse, create_from_upload, create_from_youtube
 from app.plan import FONTS, build_plan
 from app.render import render
 
@@ -166,6 +166,32 @@ def list_videos() -> list[dict[str, Any]]:
 def add_video(body: NewVideo) -> dict[str, Any]:
     video = create_from_youtube(body.url, {"max_clips": body.max_clips, "min_s": body.min_s, "max_s": body.max_s,
                                            "direction": body.direction.strip()}, body.shape)
+    job = queue.submit("analysis", "analyse", video.id, _analyse_job(video.id))
+    return {"id": video.id, "job": job}
+
+
+UPLOAD_TYPES = {".mp4", ".mov", ".m4v", ".mkv", ".webm"}
+UPLOAD_CHUNK = 8 * 1024 * 1024
+LANGUAGES = {"hi": "Hindi or Hinglish", "en": "English"}
+
+
+@app.post("/api/uploads")
+def upload_video(file: UploadFile = File(...), language: str = Form("hi"), shape: Shape = Form("9:16"),
+                 max_clips: int = Form(30), min_s: int = Form(20), max_s: int = Form(60), direction: str = Form("")) -> dict[str, Any]:
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in UPLOAD_TYPES:
+        raise HTTPException(422, "Upload an MP4, MOV, M4V, MKV or WebM video.")
+    if language not in LANGUAGES:
+        raise HTTPException(422, "Choose Hindi/Hinglish or English.")
+    options = NewVideo(url="https://youtu.be/upload", shape=shape, max_clips=max_clips, min_s=min_s, max_s=max_s,
+                       direction=direction)  # reuse the same limits as links
+    video = create_from_upload(file.filename or "upload", {"max_clips": options.max_clips, "min_s": options.min_s,
+                               "max_s": options.max_s, "direction": options.direction.strip(),
+                               "upload_file": f"upload{suffix}"}, options.shape, language)
+    target = library.video_dir(video.id) / f"upload{suffix}"
+    with open(target, "wb") as out:  # streamed in chunks: hour-long uploads never sit in memory
+        while chunk := file.file.read(UPLOAD_CHUNK):
+            out.write(chunk)
     job = queue.submit("analysis", "analyse", video.id, _analyse_job(video.id))
     return {"id": video.id, "job": job}
 

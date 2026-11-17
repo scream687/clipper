@@ -104,3 +104,20 @@ def test_only_the_two_caption_fonts_are_served(client):
 def test_requests_for_another_host_or_from_another_site_are_refused(client):
     assert client.get("/api/settings", headers={"host": "evil.example"}).status_code == 403
     assert client.put("/api/settings", json={"handle": "x"}, headers={"origin": "https://evil.example"}).status_code == 403
+
+
+def test_upload_is_stored_and_queued(client, monkeypatch):
+    from app import queue
+    queued = []
+    monkeypatch.setattr(queue, "submit", lambda lane, kind, subject, work: queued.append(subject) or "job1")
+    body = client.post("/api/uploads", files={"file": ("my talk.mov", b"0" * 1000, "video/quicktime")},
+                       data={"language": "hi", "shape": "1:1"}).json()
+    video = library.load_video(body["id"])
+    assert queued == [video.id] and video.shape == "1:1" and video.language == "hi" and video.url == ""
+    assert (library.video_dir(video.id) / "upload.mov").stat().st_size == 1000
+
+
+@pytest.mark.parametrize("name,lang", [("notes.txt", "hi"), ("clip.mp4", "fr")])
+def test_bad_uploads_are_refused(client, name, lang):
+    response = client.post("/api/uploads", files={"file": (name, b"x", "application/octet-stream")}, data={"language": lang})
+    assert response.status_code == 422

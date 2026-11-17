@@ -38,6 +38,12 @@
           <input id="add-url" name="url" type="url" required inputmode="url" autocomplete="off" spellcheck="false" placeholder="Paste a YouTube link">
           <button type="submit" class="solid-button" id="add-button">Find clips</button>
         </div>
+        <div class="upload-row">
+          <label class="field upload-field"><span>Or upload a video file</span>
+            <input id="add-file" name="file" type="file" accept="video/mp4,video/quicktime,video/x-m4v,video/x-matroska,video/webm,.mp4,.mov,.m4v,.mkv,.webm"></label>
+          <label class="field"><span>Spoken language <small>uploads only</small></span>
+            <select name="language"><option value="hi">Hindi or Hinglish</option><option value="en">English</option></select></label>
+        </div>
         <div class="add-options">
           <fieldset class="segmented">
             <legend>Shape</legend>

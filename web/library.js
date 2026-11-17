@@ -52,16 +52,29 @@ async function addVideo(event) {
   event.preventDefault();
   showAlert("");
   const f = event.currentTarget.elements;
-  if (!f.url.value.trim()) { showAlert("Paste a YouTube link first."); f.url.focus(); return; }
+  const file = f.file.files[0];
+  if (!f.url.value.trim() && !file) { showAlert("Paste a YouTube link or choose a video file first."); f.url.focus(); return; }
   el("add-button").disabled = true;
   try {
-    const { id } = await api("/api/videos", "POST", {
-      url: f.url.value.trim(), shape: f.shape.value, max_clips: Number(f.max_clips.value),
-      min_s: Number(f.min_s.value), max_s: Number(f.max_s.value), direction: f.direction.value.trim(),
-    });
-    f.url.value = ""; f.direction.value = "";
+    const options = { shape: f.shape.value, max_clips: Number(f.max_clips.value), min_s: Number(f.min_s.value),
+                      max_s: Number(f.max_s.value), direction: f.direction.value.trim() };
+    let id;
+    if (file) {
+      el("add-button").textContent = "Uploading…";
+      const form = new FormData();
+      form.append("file", file);
+      form.append("language", f.language.value);
+      Object.entries(options).forEach(([k, v]) => form.append(k, String(v)));
+      const response = await fetch("/api/uploads", { method: "POST", body: form });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(typeof body.detail === "string" ? body.detail : "The upload failed.");
+      id = body.id;
+    } else {
+      ({ id } = await api("/api/videos", "POST", { url: f.url.value.trim(), ...options }));
+    }
+    f.url.value = ""; f.direction.value = ""; f.file.value = "";
     location.hash = `#/video/${id}`;
-  } catch (error) { showAlert(error.message); } finally { el("add-button").disabled = false; }
+  } catch (error) { showAlert(error.message); } finally { el("add-button").disabled = false; el("add-button").textContent = "Find clips"; }
 }
 
 async function deleteVideo(event) {

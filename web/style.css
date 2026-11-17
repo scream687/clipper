@@ -248,3 +248,6 @@ input[type="range"] { padding: 0; border: 0; background: none; accent-color: var
 }
 .word-input { display: inline-block; width: auto; min-height: 0; padding: 0 0.25rem; font: inherit; line-height: 1.4; }
 .zip-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); margin-top: var(--space-5); }
+.upload-row { display: grid; gap: var(--space-4); margin-top: var(--space-4); }
+.upload-row input[type=file] { padding: var(--space-2); }
+@media (min-width: 48rem) { .upload-row { grid-template-columns: minmax(0, 1fr) 14rem; } }

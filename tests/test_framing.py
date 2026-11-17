@@ -33,3 +33,37 @@ def test_missing_faces_hold_the_last_position():
 
 def test_no_faces_at_all_gives_no_keys():
     assert keys_from_samples([(t * 0.2, None) for t in range(30)]) == []
+
+
+from app.framing import choose_speaker
+
+
+def two_people(seconds=10, fps=10, switch_at=5.0):
+    """Left face talks (mouth moving) before switch_at, right face after."""
+    samples = []
+    for n in range(int(seconds * fps)):
+        t = n / fps
+        wiggle = 0.05 if n % 2 else 0.0
+        left_open = 0.02 + (wiggle if t < switch_at else 0.0)
+        right_open = 0.02 + (wiggle if t >= switch_at else 0.0)
+        samples.append((t, [(0.25, 0.04, left_open), (0.75, 0.04, right_open)]))
+    return samples
+
+
+def test_crop_follows_whoever_is_talking():
+    chosen = dict(choose_speaker(two_people()))
+    assert chosen[2.0] == 0.25 and chosen[8.0] == 0.75
+
+
+def test_a_brief_interjection_does_not_cause_a_cut():
+    samples = two_people(switch_at=99)  # left talks the whole time...
+    for i, (t, faces) in enumerate(samples):
+        if 4.0 <= t < 4.6:  # ...except right speaks for 0.6 s
+            samples[i] = (t, [(0.25, 0.04, 0.02), (0.75, 0.04, 0.02 + (0.05 if i % 2 else 0))])
+    xs = {x for _, x in choose_speaker(samples)}
+    assert xs == {0.25}
+
+
+def test_single_face_is_followed_and_empty_frames_stay_empty():
+    samples = [(0.0, [(0.4, 0.05, 0.02)]), (0.1, []), (0.2, [(0.42, 0.05, 0.03)])]
+    assert choose_speaker(samples) == [(0.0, 0.4), (0.1, None), (0.2, 0.42)]

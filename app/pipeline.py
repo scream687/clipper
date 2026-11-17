@@ -2,14 +2,17 @@
 so a restart picks up where it stopped."""
 
 from datetime import datetime
+from pathlib import Path
 from typing import Callable
 
 from app import library
 from app.ai import ask_claude
 from app.framing import auto_framing
-from app.media import make_proxy, probe, remove_stale_partials
+from app.media import make_proxy, normalise_upload, probe, remove_stale_partials
 from app.model import Video, Word
 from app.moments import find_clips
+from app.transcribe import transcribe
+from app.translit import romanize
 from app.youtube import download_caption_words, download_source, fetch_info, find_orig_caption_code, has_word_timing
 
 LogFn = Callable[[str], None]
@@ -24,6 +27,14 @@ def create_from_youtube(url: str, options: dict, shape: str) -> Video:
     return video
 
 
+def create_from_upload(filename: str, options: dict, shape: str, language: str) -> Video:
+    stem = Path(filename).stem
+    video = Video(id=library.new_id(stem), title=stem[:200] or "Uploaded video", duration=0, fps=0, width=0, height=0,
+                  shape=shape, language=language, options=options, created_at=datetime.now().isoformat(timespec="seconds"))
+    library.save_video(video)
+    return video
+
+
 def _stage(video: Video, name: str, log: LogFn) -> Video:
     video = video.model_copy(update={"stage": name, "error": None})
     library.save_video(video)
@@ -31,12 +42,23 @@ def _stage(video: Video, name: str, log: LogFn) -> Video:
     return video
 
 
+def _transcript(video: Video, source, folder, log: LogFn) -> list[dict]:
+    """English YouTube videos with word-timed captions use them; everything else goes through Whisper."""
+    code = video.options.get("caption_code")
+    if video.url and code and code.startswith("en"):
+        raw = download_caption_words(video.url, code, folder / "work")
+        if has_word_timing(raw):
+            return raw
+        log("YouTube only has line-level captions here; using Whisper instead")
+    return transcribe(source, folder / "work", (video.language or "hi").split("-")[0], log)
+
+
 def analyse(video_id: str, log: LogFn) -> Video:
     video = library.load_video(video_id)
     folder = library.video_dir(video_id)
     remove_stale_partials(folder)  # left by a server that was killed mid-stage
     try:
-        if not video.channel:
+        if video.url and not video.channel:
             video = _stage(video, "Reading video details", log)
             info = fetch_info(video.url)
             code = find_orig_caption_code(info.get("automatic_captions"))
@@ -49,11 +71,17 @@ def analyse(video_id: str, log: LogFn) -> Video:
 
         source = folder / "source.mp4"
         if not source.exists():
-            video = _stage(video, "Downloading video", log)
-            download_source(video.url, source, log)
+            if video.url:
+                video = _stage(video, "Downloading video", log)
+                download_source(video.url, source, log)
+            else:
+                video = _stage(video, "Preparing the uploaded video", log)
+                upload = folder / video.options["upload_file"]
+                normalise_upload(upload, source)
+                upload.unlink(missing_ok=True)
         if not video.fps:
             facts = probe(source)
-            video = video.model_copy(update=facts)
+            video = video.model_copy(update=facts if video.url else {**facts, "duration": facts["duration"]})
             library.save_video(video)
 
         proxy = folder / "proxy.mp4"
@@ -63,13 +91,10 @@ def analyse(video_id: str, log: LogFn) -> Video:
 
         if not video.words:
             video = _stage(video, "Reading the transcript", log)
-            code = video.options.get("caption_code")
-            if not code or not code.startswith("en"):
-                raise RuntimeError("This video is not in English. Hindi and Hinglish transcription (Whisper) is not built yet.")
-            raw = download_caption_words(video.url, code, folder / "work")
-            if not has_word_timing(raw):
-                raise RuntimeError("YouTube only has line-level captions for this video; Whisper is needed and not built yet.")
-            words = [Word(id=i, text=w["word"], display=w["word"], start=w["start"], end=w["end"]) for i, w in enumerate(raw)]
+            raw = _transcript(video, source, folder, log)
+            romans = romanize([w["word"] for w in raw], ask_claude, log)
+            words = [Word(id=i, text=w["word"], display=romans.get(w["word"], w["word"]), start=w["start"], end=w["end"])
+                     for i, w in enumerate(raw)]
             video = video.model_copy(update={"words": words})
             library.save_video(video)
 
