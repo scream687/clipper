@@ -10,7 +10,15 @@ const REPLAY_BAR_FULL = 3;
 let timer = null;
 let current = null;
 
+const MAX_HITS = 20;
+const CLIP_TARGET_S = 35;
+const CLIP_MAX_S = 60;
+const LEAD_PAUSE_S = 0.7;
+let words = null;
+
 export function wireVideo() {
+  el("search-form").addEventListener("submit", search);
+  el("search-hits").addEventListener("click", makeClipFromHit);
   el("zip-export").addEventListener("click", async () => {
     try {
       const { job } = await api(`/api/videos/${current}/export-all`, "POST");
@@ -22,7 +30,75 @@ export function wireVideo() {
   });
 }
 
-export function leaveVideo() { clearTimeout(timer); current = null; }
+export function leaveVideo() { clearTimeout(timer); current = null; words = null; }
+
+async function search(event) {
+  event.preventDefault();
+  const query = el("search-input").value.trim();
+  if (query.length < 2) return;
+  const id = current;
+  el("search-hits").replaceChildren();
+  if (event.submitter?.value === "ask") {
+    try {
+      const { job } = await api(`/api/videos/${id}/find`, "POST", { query });
+      el("search-state").textContent = "Claude is looking for that moment…";
+      for (;;) {
+        const j = await api(`/api/jobs/${job}`);
+        if (current !== id) return;
+        if (j.status === "done") {
+          el("search-state").textContent = `Added ${j.result.added.length} clip${j.result.added.length === 1 ? "" : "s"} at the end of the list.`;
+          await showVideo(id); return;
+        }
+        if (j.status === "error") { el("search-state").textContent = ""; showAlert(j.error); return; }
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+    } catch (error) { showAlert(error.message); }
+    return;
+  }
+  words = words || await api(`/api/videos/${id}/words`);
+  const needle = query.toLowerCase().split(/\s+/);
+  const hits = [];
+  for (let i = 0; i < words.length && hits.length < MAX_HITS; i++) {
+    const match = needle.every((n, k) => words[i + k] && (words[i + k].display.toLowerCase().includes(n) || words[i + k].text.toLowerCase().includes(n)));
+    if (match) { hits.push(i); i += needle.length; }
+  }
+  el("search-state").textContent = hits.length ? `${hits.length}${hits.length === MAX_HITS ? "+" : ""} matches` : "No matches in the transcript.";
+  el("search-hits").replaceChildren(...hits.map((i) => hitRow(i, needle.length)));
+}
+
+function hitRow(i, len) {
+  const row = document.createElement("li");
+  row.className = "search-hit";
+  const time = document.createElement("span");
+  time.className = "timecode"; time.textContent = clock(words[i].start);
+  const text = document.createElement("span");
+  const from = Math.max(0, i - 8), to = Math.min(words.length, i + len + 8);
+  for (let k = from; k < to; k++) {
+    const part = k >= i && k < i + len ? document.createElement("mark") : document.createElement("span");
+    part.textContent = words[k].display + " ";
+    text.append(part);
+  }
+  const button = document.createElement("button");
+  button.type = "button"; button.className = "quiet-button"; button.textContent = "Make clip"; button.dataset.word = i;
+  row.append(time, text, button);
+  return row;
+}
+
+async function makeClipFromHit(event) {
+  const button = event.target.closest("[data-word]");
+  if (!button) return;
+  const hit = Number(button.dataset.word);
+  let first = hit;  // start at the pause before the hit, at most 15 words back
+  while (first > 0 && hit - first < 15 && words[first].start - words[first - 1].end < LEAD_PAUSE_S) first -= 1;
+  let last = hit;
+  while (last + 1 < words.length && words[last + 1].end - words[first].start <= CLIP_MAX_S
+         && words[last].end - words[first].start < CLIP_TARGET_S) last += 1;
+  button.disabled = true;
+  try {
+    const { index } = await api(`/api/videos/${current}/clips`, "POST", { first_word: first, last_word: last });
+    location.hash = `#/clip/${current}/${index}`;
+  } catch (error) { showAlert(error.message); button.disabled = false; }
+}
 
 export async function showVideo(id) {
   clearTimeout(timer);
@@ -52,6 +128,7 @@ export async function showVideo(id) {
   if (video.clips.length) drawGraph(video);
   el("clip-list").replaceChildren(...video.clips.map((c) => clipRow(video, c)));
   el("zip-bar").hidden = !video.clips.length || busy;
+  el("search-form").hidden = video.stage !== "ready";
   el("zip-download").hidden = !video.zip_ready;
   el("zip-download").href = `/api/videos/${id}/clips.zip`;
   if (video.zip_job) followZip(video.zip_job, id);

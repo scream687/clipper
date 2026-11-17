@@ -15,7 +15,9 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app import DATA_DIR, ROOT, cleanup, library, queue
 from app.model import Clip, CropKey, FramingMode, Look, Shape, Video
-from app.pipeline import analyse, create_from_upload, create_from_youtube
+from app.ai import ask_claude
+from app.moments import find_clips
+from app.pipeline import add_clips, analyse, create_from_upload, create_from_youtube
 from app.plan import FONTS, build_plan
 from app.render import render
 
@@ -355,6 +357,51 @@ def download_export(video_id: str, index: int, download: bool = False) -> FileRe
         _not_found("Export")
     name = f"{video.id}_{clip.index:02d}.mp4" if download else None
     return FileResponse(path, media_type="video/mp4", filename=name)
+
+
+class FindIn(BaseModel):
+    query: str = Field(min_length=3, max_length=500)
+
+
+class NewClip(BaseModel):
+    first_word: int
+    last_word: int
+
+
+@app.post("/api/videos/{video_id}/find")
+def find_moment(video_id: str, body: FindIn) -> dict[str, str]:
+    video = get_video_or_404(video_id)
+    if video.stage != "ready":
+        raise HTTPException(409, "Wait until this video has finished analysing.")
+    o = video.options
+
+    def work(log):
+        log("Asking Claude for that moment")
+        direction = (f"The user is looking for this specific moment: {body.query.strip()}. Return only moments that "
+                     "match it, best match first; return none if nothing matches.")
+        try:
+            clips = find_clips(video, ask_claude, min_s=o.get("min_s", 20), max_s=o.get("max_s", 60), max_clips=3,
+                               direction=direction)
+        except RuntimeError as error:
+            raise RuntimeError("Claude found nothing matching that description.") from error
+        return {"added": add_clips(video, clips, log)}
+
+    return {"job": queue.submit("analysis", "find", video_id, work)}
+
+
+@app.post("/api/videos/{video_id}/clips")
+def make_clip(video_id: str, body: NewClip) -> dict[str, Any]:
+    video = get_video_or_404(video_id)
+    ids = {w.id for w in video.words}
+    if body.first_word not in ids or body.last_word not in ids or body.first_word > body.last_word:
+        raise HTTPException(422, "The clip's start must be a word before its end.")
+    if not (library.video_dir(video_id) / "proxy.mp4").exists():
+        raise HTTPException(409, "The full video was cleaned up, so new clips cannot be made from it.")
+    words = {w.id: w for w in video.words}
+    title = " ".join(words[i].display for i in range(body.first_word, min(body.first_word + 8, body.last_word + 1)))
+    index = add_clips(video, [Clip(index=0, first_word=body.first_word, last_word=body.last_word, title=title[:80])],
+                      log=lambda m: None)[0]
+    return {"index": index}
 
 
 @app.post("/api/videos/{video_id}/export-all")

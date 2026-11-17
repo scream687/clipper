@@ -121,3 +121,21 @@ def test_upload_is_stored_and_queued(client, monkeypatch):
 def test_bad_uploads_are_refused(client, name, lang):
     response = client.post("/api/uploads", files={"file": (name, b"x", "application/octet-stream")}, data={"language": lang})
     assert response.status_code == 422
+
+
+def test_find_needs_a_finished_video(client, stored):
+    library.save_video(library.load_video(stored.id).model_copy(update={"stage": "Downloading video"}))
+    assert client.post(f"/api/videos/{stored.id}/find", json={"query": "insulin"}).status_code == 409
+
+
+def test_making_a_clip_from_words_appends_it(client, stored, monkeypatch):
+    from app import pipeline
+    (library.video_dir(stored.id) / "proxy.mp4").write_bytes(b"x")
+    monkeypatch.setattr(pipeline, "frame_clip", lambda video, clip: clip)
+    body = client.post(f"/api/videos/{stored.id}/clips", json={"first_word": 22, "last_word": 30}).json()
+    assert body["index"] == 1 and library.load_clip(stored.id, 1).first_word == 22
+
+
+def test_making_a_clip_checks_its_range_and_the_video(client, stored):
+    assert client.post(f"/api/videos/{stored.id}/clips", json={"first_word": 30, "last_word": 22}).status_code == 422
+    assert client.post(f"/api/videos/{stored.id}/clips", json={"first_word": 22, "last_word": 30}).status_code == 409

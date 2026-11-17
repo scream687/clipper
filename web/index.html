@@ -85,6 +85,14 @@
         <a class="quiet-button" id="zip-download" hidden>Download zip</a>
         <p class="hint" id="zip-state" role="status"></p>
       </div>
+      <form class="search-bar" id="search-form" hidden>
+        <label class="visually-hidden" for="search-input">Search this video</label>
+        <input id="search-input" name="q" type="search" minlength="2" maxlength="500" autocomplete="off" placeholder="A word, or describe a moment: where he explains insulin">
+        <button type="submit" class="quiet-button" name="mode" value="words">Search words</button>
+        <button type="submit" class="solid-button" name="mode" value="ask">Ask Claude</button>
+      </form>
+      <p class="hint" id="search-state" role="status"></p>
+      <ol class="search-hits" id="search-hits"></ol>
       <ol class="clip-list" id="clip-list"></ol>
     </section>
 

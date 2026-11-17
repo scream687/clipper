@@ -9,7 +9,7 @@ from app import library
 from app.ai import ask_claude
 from app.framing import auto_framing
 from app.media import make_proxy, normalise_upload, probe, remove_stale_partials
-from app.model import Video, Word
+from app.model import Clip, Video, Word
 from app.moments import find_clips
 from app.transcribe import transcribe
 from app.translit import romanize
@@ -51,6 +51,30 @@ def _transcript(video: Video, source, folder, log: LogFn) -> list[dict]:
             return raw
         log("YouTube only has line-level captions here; using Whisper instead")
     return transcribe(source, folder / "work", (video.language or "hi").split("-")[0], log)
+
+
+def frame_clip(video: Video, clip: Clip) -> Clip:
+    by_id = {w.id: w for w in video.words}
+    start = max(0.0, by_id[clip.first_word].start - FRAMING_MARGIN_S)
+    end = by_id[clip.last_word].end + FRAMING_MARGIN_S
+    framing, keys = auto_framing(library.video_dir(video.id) / "proxy.mp4", start, end)
+    framed = clip.model_copy(update={"framing": framing, "auto_keys": keys, "framed": True})
+    library.save_clip(video.id, framed)
+    return framed
+
+
+def add_clips(video: Video, clips: list[Clip], log: LogFn) -> list[int]:
+    """Append clips after the existing ones and frame them. Returns their indices."""
+    start = max((c.index for c in library.load_clips(video.id)), default=-1) + 1
+    added = []
+    for offset, clip in enumerate(clips):
+        clip = clip.model_copy(update={"index": start + offset, "shape": video.shape})
+        library.save_clip(video.id, clip)
+        if (library.video_dir(video.id) / "proxy.mp4").exists():
+            frame_clip(video, clip)
+        added.append(clip.index)
+        log(f"Added clip {clip.index + 1}: {clip.title}")
+    return added
 
 
 def analyse(video_id: str, log: LogFn) -> Video:
@@ -110,12 +134,8 @@ def analyse(video_id: str, log: LogFn) -> Video:
         unframed = [c for c in library.load_clips(video_id) if not c.framed]
         if unframed:
             video = _stage(video, "Framing clips", log)
-            by_id = {w.id: w for w in video.words}
             for number, clip in enumerate(unframed, 1):
-                start = max(0.0, by_id[clip.first_word].start - FRAMING_MARGIN_S)
-                end = by_id[clip.last_word].end + FRAMING_MARGIN_S
-                framing, keys = auto_framing(proxy, start, end)
-                library.save_clip(video_id, clip.model_copy(update={"framing": framing, "auto_keys": keys, "framed": True}))
+                frame_clip(video, clip)
                 log(f"Framed clip {number}/{len(unframed)}")
 
         return _stage(video, "ready", log)

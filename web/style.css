@@ -251,3 +251,8 @@ input[type="range"] { padding: 0; border: 0; background: none; accent-color: var
 .upload-row { display: grid; gap: var(--space-4); margin-top: var(--space-4); }
 .upload-row input[type=file] { padding: var(--space-2); }
 @media (min-width: 48rem) { .upload-row { grid-template-columns: minmax(0, 1fr) 14rem; } }
+.search-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: var(--space-2); margin-top: var(--space-5); }
+.search-hits { margin-top: var(--space-2); }
+.search-hit { display: grid; grid-template-columns: 4.5rem minmax(0, 1fr) auto; gap: var(--space-3); align-items: center; padding: var(--space-2) 0; border-bottom: 1px solid var(--color-line); }
+.search-hit mark { background: var(--color-signal); color: var(--color-signal-ink); border-radius: 0.2rem; padding: 0 0.15rem; }
+@media (max-width: 40rem) { .search-bar { grid-template-columns: 1fr 1fr; } .search-bar input { grid-column: 1 / -1; } }
