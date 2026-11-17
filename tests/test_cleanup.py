@@ -92,7 +92,7 @@ def test_export_all_zips_every_clip_that_is_not_discarded(lib, tmp_path):
 
     with zipfile.ZipFile(path) as z:
         names = z.namelist()
-        assert len(names) == 1 and names[0].endswith(".mp4")
+        assert len(names) == 2 and names[0].endswith(".mp4") and names[1] == "posts.txt"
         assert all(info.compress_type == zipfile.ZIP_STORED for info in z.infolist())
 
 

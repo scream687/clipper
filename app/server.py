@@ -17,7 +17,7 @@ from app import DATA_DIR, ROOT, cleanup, library, queue
 from app.model import Clip, CropKey, FramingMode, Look, Shape, Video
 from app.ai import ask_claude
 from app.emoji import is_emoji
-from app.moments import find_clips
+from app.moments import clean_hashtags, find_clips
 from app.pipeline import add_clips, analyse, create_from_upload, create_from_youtube
 from app.plan import FONTS, build_plan
 from app.render import render
@@ -268,6 +268,7 @@ class ClipEdit(BaseModel):
     show_emoji: bool = True
     title: str = Field(default="", max_length=MAX_TEXT)
     description: str = Field(default="", max_length=1000)
+    hashtags: str = Field(default="", max_length=MAX_TEXT)
     status: str = Field(default="new", pattern="^(new|kept|discarded)$")
 
     @field_validator("emoji_words")
@@ -276,6 +277,11 @@ class ClipEdit(BaseModel):
         if not all(is_emoji(e) for e in value.values()):
             raise ValueError("Only single emoji can be added to a word")
         return value
+
+    @field_validator("hashtags")
+    @classmethod
+    def tidy_hashtags(cls, value: str) -> str:
+        return clean_hashtags(value)
 
     @field_validator("text_fixes")
     @classmethod

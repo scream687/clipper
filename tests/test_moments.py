@@ -122,3 +122,9 @@ def test_long_unpunctuated_run_breaks_at_its_biggest_pause():
         words.append(Word(id=i, text="word", display="word", start=t, end=t + d)); t += d
     sentences = split_sentences(words)
     assert sentences[0][-1].id == 22
+
+
+def test_hashtags_are_cleaned():
+    from app.moments import clean_hashtags
+    assert clean_hashtags("#Health, longevity #health #raj-shamani") == "#health #longevity #rajshamani"
+    assert clean_hashtags("") == ""

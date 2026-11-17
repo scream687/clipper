@@ -74,6 +74,7 @@ class Clip(BaseModel):
     show_emoji: bool = True
     title: str = ""
     description: str = ""
+    hashtags: str = ""  # "#tag #tag", posted with the description
     score: float = 0
     retention: float | None = None
     mentions: int | None = None  # comments whose timestamps point into this clip

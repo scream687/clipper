@@ -21,13 +21,26 @@ SCHEMA = {
         "type": "object",
         "properties": {
             "first_sentence": {"type": "integer"}, "last_sentence": {"type": "integer"},
-            "title": {"type": "string"}, "hook": {"type": "string"}, "description": {"type": "string"},
+            "title": {"type": "string"}, "hook": {"type": "string"}, "description": {"type": "string"}, "hashtags": {"type": "string"},
             "score": {"type": "integer", "minimum": 1, "maximum": 10},
         },
-        "required": ["first_sentence", "last_sentence", "title", "hook", "description", "score"],
+        "required": ["first_sentence", "last_sentence", "title", "hook", "description", "hashtags", "score"],
         "additionalProperties": False}}},
     "required": ["moments"], "additionalProperties": False,
 }
+
+
+MAX_TAGS = 8
+
+
+def clean_hashtags(text: str) -> str:
+    """'#Health, longevity #health' -> '#health #longevity': letters, digits and _ only, no repeats."""
+    tags = []
+    for token in text.replace(",", " ").split():
+        tag = "".join(ch for ch in token.lstrip("#") if ch.isalnum() or ch == "_").lower()
+        if tag and f"#{tag}" not in tags:
+            tags.append(f"#{tag}")
+    return " ".join(tags[:MAX_TAGS])
 
 
 def _clock(seconds: float) -> str:
@@ -66,7 +79,9 @@ def build_prompt(video: Video, sentences: list[list[Word]], min_s: int, max_s: i
         "Return sentence ids: first_sentence and last_sentence are the numbers after 's'.\n"
         "Write title (max 60 characters), hook (max 12 words, shown on screen for the first seconds) and "
         "description (max 150 characters) in the language and script the transcript uses; if it is "
-        "Hindi or Hinglish, write in Roman letters (Hinglish as people text it). score is 1-10, spread honestly.\n\n"
+        "Hindi or Hinglish, write in Roman letters (Hinglish as people text it). hashtags: 3-6 hashtags for the post, "
+        "space separated, mixing the specific topic, the speaker or show, and one or two broad discovery tags; "
+        "Roman letters only. score is 1-10, spread honestly.\n\n"
         "Transcript:\n" + "\n".join(lines)
     )
 
@@ -104,6 +119,7 @@ def moments_to_clips(video: Video, sentences: list[list[Word]], moments: list[di
         clips.append(Clip(index=len(clips), first_word=sentences[first][0].id, last_word=sentences[last][-1].id,
                           shape=shape, title=moment["title"].strip()[:80], hook=moment["hook"].strip(),
                           description=moment["description"].strip(), score=moment["score"],
+                          hashtags=clean_hashtags(moment.get("hashtags", "")),
                           retention=score_range(video.heatmap, start, end),
                           mentions=mentions_in(video.comments, start, end) if video.comments else None))
         if len(clips) >= max_clips:

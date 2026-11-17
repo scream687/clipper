@@ -55,7 +55,7 @@ function fillForm() {
   ["look", "shape", "framing"].forEach((name) => { f[name].value = c[name]; });
   ["show_hook", "show_handle", "show_credit", "swear_filter", "show_emoji"].forEach((name) => { f[name].checked = c[name]; });
   el("emoji-list").textContent = Object.values(c.emoji_words).join(" ");
-  ["hook", "title", "description"].forEach((name) => { f[name].value = c[name]; });
+  ["hook", "title", "description", "hashtags"].forEach((name) => { f[name].value = c[name]; });
 }
 
 function readForm() {
@@ -63,7 +63,7 @@ function readForm() {
   return {
     look: f.look.value, shape: f.shape.value, framing: f.framing.value,
     show_hook: f.show_hook.checked, show_handle: f.show_handle.checked, show_credit: f.show_credit.checked,
-    swear_filter: f.swear_filter.checked, show_emoji: f.show_emoji.checked, hook: f.hook.value, title: f.title.value, description: f.description.value,
+    swear_filter: f.swear_filter.checked, show_emoji: f.show_emoji.checked, hook: f.hook.value, title: f.title.value, description: f.description.value, hashtags: f.hashtags.value,
   };
 }
 
@@ -82,7 +82,7 @@ async function save() {
     look: c.look, shape: c.shape, framing: c.framing, manual_keys: c.manual_keys, hook: c.hook,
     show_hook: c.show_hook, show_handle: c.show_handle, show_credit: c.show_credit, swear_filter: c.swear_filter,
     emoji_words: c.emoji_words, show_emoji: c.show_emoji,
-    title: c.title, description: c.description, status: c.status,
+    title: c.title, description: c.description, hashtags: c.hashtags, status: c.status,
   };
   try {
     const body = await api(`/api/videos/${state.videoId}/clips/${state.index}`, "PUT", payload);
@@ -304,7 +304,7 @@ function wireControls() {
     showDiscard();
   });
   el("copy-title").addEventListener("click", (e) => copyText(e.currentTarget, state.clip.title));
-  el("copy-description").addEventListener("click", (e) => copyText(e.currentTarget, state.clip.description));
+  el("copy-description").addEventListener("click", (e) => copyText(e.currentTarget, [state.clip.description, state.clip.hashtags].filter(Boolean).join("\n\n")));
   el("emoji-suggest").addEventListener("click", async (e) => {
     const button = e.currentTarget;
     button.disabled = true; button.textContent = "Asking Claude…";

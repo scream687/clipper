@@ -99,6 +99,8 @@ def export_all(video_id: str, handle: str, log: LogFn) -> Path:
         for clip, path in files:
             safe = "".join(ch for ch in clip.title if ch.isalnum() or ch in " -_").strip()[:60] or "clip"
             z.write(path, f"{clip.index + 1:02d} {safe}.mp4")
+        z.writestr("posts.txt", "\n\n".join(
+            f"{clip.index + 1:02d} {clip.title}\n{clip.description}\n{clip.hashtags}".strip() for clip, _ in files) + "\n")
     partial.replace(zip_path)
     log(f"Zipped {len(files)} clips")
     return zip_path
