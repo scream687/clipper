@@ -32,6 +32,13 @@ async function loadSettings() {
   const settings = await api("/api/settings");
   el("settings-form").elements.handle.value = settings.handle;
   el("settings-form").elements.channels.value = settings.channels.join("\n");
+  showOpusKey(settings.has_opusclip_key);
+}
+
+function showOpusKey(saved) {
+  const field = el("settings-form").elements.opusclip_key;
+  field.value = "";
+  field.placeholder = saved ? "Saved. Leave blank to keep it." : "From OpusClip → Settings → API";
 }
 
 el("settings-toggle").addEventListener("click", () => {
@@ -43,7 +50,9 @@ el("settings-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
     const f = event.currentTarget.elements;
-    await api("/api/settings", "PUT", { handle: f.handle.value.trim(), channels: f.channels.value.split("\n").map((c) => c.trim()).filter(Boolean) });
+    const saved = await api("/api/settings", "PUT", { handle: f.handle.value.trim(), opusclip_key: f.opusclip_key.value.trim(),
+      channels: f.channels.value.split("\n").map((c) => c.trim()).filter(Boolean) });
+    showOpusKey(saved.has_opusclip_key);
     el("settings-status").textContent = "Saved. New previews and exports use it.";
   } catch (error) { el("settings-status").textContent = error.message; }
 });

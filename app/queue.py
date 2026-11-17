@@ -10,12 +10,12 @@ import uuid
 from typing import Any, Callable, Literal
 
 LogFn = Callable[[str], None]
-Lane = Literal["analysis", "export"]
+Lane = Literal["analysis", "export", "opusclip"]
 
 MAX_LOG_LINES = 300
 MAX_JOBS_KEPT = 200
 # Repeated progress lines replace each other instead of piling up.
-PROGRESS_PREFIXES = ("Downloading video", "Rendering", "Framed clip")
+PROGRESS_PREFIXES = ("Downloading video", "Rendering", "Framed clip", "Waiting for OpusClip")
 
 _lock = threading.Lock()
 _jobs: dict[str, dict[str, Any]] = {}

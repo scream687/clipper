@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app import ROOT, SETTINGS_FILE, ai, channels, cleanup, library, queue
+from app import ROOT, SETTINGS_FILE, ai, channels, cleanup, library, opusclip, queue
 from app.model import Clip, CropKey, FramingMode, Look, Shape, Video
 from app.emoji import is_emoji
 from app.moments import clean_hashtags, find_clips
@@ -93,6 +93,7 @@ def get_clip_or_404(video_id: str, index: int) -> Clip:
 class SettingsIn(BaseModel):
     handle: str = Field(default="", max_length=60)
     channels: list[str] | None = Field(default=None, max_length=50)
+    opusclip_key: str = Field(default="", max_length=500)  # blank keeps the saved one
 
 
 def load_settings() -> dict[str, Any]:
@@ -114,7 +115,8 @@ def save_settings(settings: dict[str, Any]) -> None:
 @app.get("/api/settings")
 def get_settings() -> dict[str, Any]:
     settings = load_settings()
-    return {"handle": settings.get("handle", ""), "channels": settings.get("channels", channels.DEFAULT_CHANNELS)}
+    return {"handle": settings.get("handle", ""), "channels": settings.get("channels", channels.DEFAULT_CHANNELS),
+            "has_opusclip_key": bool(settings.get("opusclip_key"))}
 
 
 @app.put("/api/settings")
@@ -122,6 +124,8 @@ def put_settings(body: SettingsIn) -> dict[str, Any]:
     update = {"handle": body.handle.strip()}
     if body.channels is not None:
         update["channels"] = channels.clean_channels(body.channels)
+    if body.opusclip_key.strip():
+        update["opusclip_key"] = body.opusclip_key.strip()
     save_settings({**load_settings(), **update})
     return get_settings()
 
@@ -293,11 +297,13 @@ def get_video(video_id: str) -> dict[str, Any]:
     for c in library.load_clips(video_id):
         first, last = words.get(c.first_word), words.get(c.last_word)
         clips.append({**c.model_dump(include={"index", "title", "hook", "description", "score", "retention", "mentions", "status",
-                                              "look", "shape"}),
+                                              "look", "shape", "source"}),
                       "start": first.start if first else 0, "end": last.end if last else 0,
                       "exported": (library.clip_dir(video_id, c.index) / "export.mp4").is_file()})
     zip_job = queue.active_for(f"{video_id}/zip")
+    opus_job = queue.active_for(f"{video_id}/opusclip")
     return {**_summary(video), "heatmap": video.heatmap, "language": video.language,
+            "opus_job": opus_job["id"] if opus_job else None, "opus_done": bool(video.options.get("opusclip_imported")),
             "has_proxy": (library.video_dir(video_id) / "proxy.mp4").is_file(), "clips": clips,
             "zip_ready": (library.video_dir(video_id) / "clips.zip").is_file(), "zip_job": zip_job["id"] if zip_job else None}
 
@@ -488,7 +494,7 @@ def find_moment(video_id: str, body: FindIn) -> dict[str, str]:
     o = video.options
 
     def work(log):
-        log("Asking Claude for that moment")
+        log("Asking the AI for that moment")
         direction = (f"The user is looking for this specific moment: {body.query.strip()}. Return only moments that "
                      "match it, best match first; return none if nothing matches.")
         try:
@@ -499,6 +505,44 @@ def find_moment(video_id: str, body: FindIn) -> dict[str, str]:
         return {"added": add_clips(video, clips, log)}
 
     return {"job": queue.submit("analysis", "find", video_id, work)}
+
+
+@app.post("/api/videos/{video_id}/opusclip")
+def ask_opusclip(video_id: str) -> dict[str, str]:
+    """Import OpusClip's picks for this video as extra clips. Runs on its own lane: OpusClip can take a while."""
+    video = get_video_or_404(video_id)
+    key = load_settings().get("opusclip_key", "")
+    if not key:
+        raise HTTPException(409, "Add your OpusClip API key in Settings first.")
+    if video.stage != "ready":
+        raise HTTPException(409, "Wait until this video has finished analysing.")
+    if not is_youtube_url(video.url):
+        raise HTTPException(409, "OpusClip needs a public link, so it only works for videos added from YouTube.")
+    if video.options.get("opusclip_imported"):
+        raise HTTPException(409, "OpusClip's picks are already in the list.")
+    if active := queue.active_for(f"{video_id}/opusclip"):
+        return {"job": active["id"]}
+
+    def work(log):
+        current = library.load_video(video_id)
+        project = current.options.get("opusclip_project")
+        if project:
+            log(f"Picking up OpusClip project {project} again (no new credits spent)")
+        else:
+            o = current.options
+            project = opusclip.submit(key, current.url, o.get("min_s", 20), o.get("max_s", 60))
+            current = current.model_copy(update={"options": {**current.options, "opusclip_project": project}})
+            library.save_video(current)  # before waiting, so a restart never submits (and pays) twice
+            log(f"Sent to OpusClip as project {project}")
+        clips = opusclip.to_clips(current, opusclip.wait_for_clips(key, project, log))
+        if not clips:
+            raise RuntimeError("OpusClip finished, but none of its clips lined up with this video's transcript.")
+        added = add_clips(current, clips, log)
+        latest = library.load_video(video_id)
+        library.save_video(latest.model_copy(update={"options": {**latest.options, "opusclip_imported": True}}))
+        return {"added": added}
+
+    return {"job": queue.submit("opusclip", "opusclip", f"{video_id}/opusclip", work)}
 
 
 @app.post("/api/videos/{video_id}/clips")

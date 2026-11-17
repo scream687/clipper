@@ -76,6 +76,7 @@ class Clip(BaseModel):
     description: str = ""
     hashtags: str = ""  # "#tag #tag", posted with the description
     score: float = 0
+    source: str = ""  # "" = found here; "opusclip" = imported from OpusClip
     retention: float | None = None
     mentions: int | None = None  # comments whose timestamps point into this clip
     status: Literal["new", "kept", "discarded"] = "new"

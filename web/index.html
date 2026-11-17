@@ -25,6 +25,10 @@
         <span>Channels to watch <small>one @handle per line</small></span>
         <textarea name="channels" rows="3" autocomplete="off" spellcheck="false" placeholder="@rajshamani"></textarea>
       </label>
+      <label class="field">
+        <span>OpusClip API key <small>optional, for “Also ask OpusClip”</small></span>
+        <input name="opusclip_key" type="password" maxlength="500" autocomplete="off" spellcheck="false">
+      </label>
       <button type="submit" class="solid-button">Save</button>
       <p class="hint" id="settings-status" role="status"></p>
     </form>
@@ -118,6 +122,8 @@
         <button type="button" class="solid-button" id="zip-export">Export all as zip</button>
         <a class="quiet-button" id="zip-download" hidden>Download zip</a>
         <p class="hint" id="zip-state" role="status"></p>
+        <button type="button" class="quiet-button" id="opus-run" hidden>Also ask OpusClip</button>
+        <p class="hint" id="opus-state" role="status"></p>
       </div>
       <form class="search-bar" id="search-form" hidden>
         <label class="visually-hidden" for="search-input">Search this video</label>

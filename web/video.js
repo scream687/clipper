@@ -25,6 +25,12 @@ export function wireVideo() {
       followZip(job, current);
     } catch (error) { showAlert(error.message); }
   });
+  el("opus-run").addEventListener("click", async () => {
+    try {
+      const { job } = await api(`/api/videos/${current}/opusclip`, "POST");
+      followOpus(job, current);
+    } catch (error) { showAlert(error.message); }
+  });
   el("video-retry").addEventListener("click", async () => {
     try { await api(`/api/videos/${current}/retry`, "POST"); await showVideo(current); } catch (error) { showAlert(error.message); }
   });
@@ -132,6 +138,9 @@ export async function showVideo(id) {
   el("zip-download").hidden = !video.zip_ready;
   el("zip-download").href = `/api/videos/${id}/clips.zip`;
   if (video.zip_job) followZip(video.zip_job, id);
+  el("opus-run").hidden = !/^https:\/\/(www\.|m\.)?(youtube\.com|youtu\.be)\//.test(video.url) || video.opus_done;
+  if (video.opus_job) followOpus(video.opus_job, id);
+  else if (!opusFollowing) el("opus-state").textContent = "";
   if (busy) timer = setTimeout(() => showVideo(id), POLL_MS);
 }
 
@@ -152,6 +161,30 @@ async function followZip(jobId, id) {
   }
   el("zip-export").disabled = false;
   zipFollowing = null;
+}
+
+let opusFollowing = null;
+
+async function followOpus(jobId, id) {
+  if (opusFollowing === jobId) return;
+  opusFollowing = jobId;
+  el("opus-run").disabled = true;
+  for (;;) {
+    let job;
+    try { job = await api(`/api/jobs/${jobId}`); } catch (error) { showAlert(error.message); break; }
+    if (current !== id) break;
+    el("opus-state").textContent = job.log.at(-1) || "Sending to OpusClip…";
+    if (job.status === "done") {
+      const n = job.result.added.length;
+      opusFollowing = null; await showVideo(id);
+      el("opus-state").textContent = `Added ${n} OpusClip clip${n === 1 ? "" : "s"} at the end of the list.`;
+      return;
+    }
+    if (job.status === "error") { el("opus-state").textContent = ""; showAlert(job.error); break; }
+    await new Promise((r) => setTimeout(r, 3000));
+  }
+  el("opus-run").disabled = false;
+  opusFollowing = null;
 }
 
 function svg(name, attrs) {
@@ -206,7 +239,8 @@ function clipRow(video, clip) {
     replay.querySelector(".replay-label").textContent = `${clip.retention.toFixed(1)}× replay`;
   }
   const said = clip.mentions ? ` · ${clip.mentions} comment${clip.mentions === 1 ? "" : "s"} point here` : "";
-  node.querySelector(".clip-status").textContent = (clip.exported ? "Exported" : `Score ${clip.score}/10`) + said;
+  const picked = clip.source === "opusclip" ? "Picked by OpusClip" : `Score ${clip.score}/10`;
+  node.querySelector(".clip-status").textContent = (clip.exported ? "Exported" : picked) + said;
   if (clip.status === "discarded") node.classList.add("is-discarded");
   return node;
 }
