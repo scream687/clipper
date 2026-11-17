@@ -2,6 +2,7 @@
 
 from typing import Callable
 
+from app.ai import AIError, AIUnavailable
 from app.model import Clip, Video, Word
 from app.comments import comment_note, mentions_in
 from app.retention import pick_peaks, score_range
@@ -110,6 +111,91 @@ def moments_to_clips(video: Video, sentences: list[list[Word]], moments: list[di
     return clips
 
 
+EDGE_BEFORE, EDGE_AFTER = 30, 20  # words shown around each edge: outside then inside the clip
+EDGE_SLACK = 0.15                  # refined length may stray this share outside min/max
+
+EDGE_SCHEMA = {
+    "type": "object",
+    "properties": {"clips": {"type": "array", "items": {
+        "type": "object",
+        "properties": {"clip": {"type": "integer"}, "first_word": {"type": "integer"}, "last_word": {"type": "integer"}},
+        "required": ["clip", "first_word", "last_word"], "additionalProperties": False}}},
+    "required": ["clips"], "additionalProperties": False,
+}
+
+
+def _edge_windows(video: Video, clip: Clip) -> tuple[range, range]:
+    n = len(video.words)
+    return (range(max(0, clip.first_word - EDGE_BEFORE), min(clip.last_word, clip.first_word + EDGE_AFTER) + 1),
+            range(max(clip.first_word, clip.last_word - EDGE_AFTER), min(n, clip.last_word + EDGE_BEFORE + 1)))
+
+
+def build_edge_prompt(video: Video, clips: list[Clip], min_s: int, max_s: int) -> str:
+    words = video.words
+
+    def show(ids: range) -> str:
+        return f"(from {_clock(words[ids.start].start)}) " + " ".join(f"{i}:{words[i].display}" for i in ids)
+
+    blocks = []
+    for n, clip in enumerate(clips):
+        head, tail = _edge_windows(video, clip)
+        blocks.append(f"Clip {n}: {clip.title}\nNow starts at word {clip.first_word}, ends at word {clip.last_word} "
+                      f"({words[clip.last_word].end - words[clip.first_word].start:.0f} s).\n"
+                      f"START window: {show(head)}\nEND window: {show(tail)}")
+    return (
+        "These clips were cut from an auto-captioned transcript, so their edges can land mid-phrase. "
+        "Each word is shown as id:word. For every clip choose first_word from its START window and last_word "
+        "from its END window.\n"
+        "first_word: the clip must open on its hook, the first word of a sentence or question that grabs attention "
+        "at once and makes sense with no earlier context. If the moment answers a question asked just before, "
+        "start at that question. Never start mid-phrase; skip throwaway openers (so, and, to, okay, hum, like, "
+        "you know, toh, aur).\n"
+        "last_word: end right after the point or punchline lands, on the last word of a complete sentence. "
+        "Never end mid-phrase or on a dangling word (and, but, the, of, ki, ke, ka, to, aur); "
+        "leave out the start of the next topic.\n"
+        f"Keep each clip about {min_s}-{max_s} seconds long. Keep the current edge when it is already right.\n\n"
+        + "\n\n".join(blocks)
+    )
+
+
+def apply_edges(video: Video, clips: list[Clip], answer: dict, min_s: float, max_s: float) -> list[Clip]:
+    """Move clip edges to the refined words when they stay in their windows, length limits and do not overlap."""
+    words = video.words
+    proposed = {item.get("clip"): item for item in answer.get("clips", []) if isinstance(item, dict)}
+    result = list(clips)
+    for n, clip in enumerate(clips):
+        item = proposed.get(n)
+        if not item:
+            continue
+        head, tail = _edge_windows(video, clip)
+        first, last = item["first_word"], item["last_word"]
+        if first not in head or last not in tail or last <= first:
+            continue
+        length = words[last].end - words[first].start
+        if not (min_s * (1 - EDGE_SLACK) <= length <= max_s * (1 + EDGE_SLACK)):
+            continue
+        others = [c for k, c in enumerate(result) if k != n]
+        if any(first <= o.last_word and last >= o.first_word for o in others):
+            continue
+        result[n] = clip.model_copy(update={"first_word": first, "last_word": last})
+    return result
+
+
+def refine_edges(video: Video, clips: list[Clip], ask: AskFn, min_s: int, max_s: int) -> list[Clip]:
+    """Second pass: snap each clip to a clean opening and a landed ending. Best effort; keeps edges on failure."""
+    if not clips:
+        return clips
+    try:
+        answer = ask(build_edge_prompt(video, clips, min_s, max_s), EDGE_SCHEMA, SYSTEM)
+    except (AIError, AIUnavailable):
+        return clips
+    refined = apply_edges(video, clips, answer, min_s, max_s)
+    spans = [(video.words[c.first_word].start, video.words[c.last_word].end) for c in refined]
+    return [c.model_copy(update={"retention": score_range(video.heatmap, a, b),
+                                 "mentions": mentions_in(video.comments, a, b) if video.comments else None})
+            for c, (a, b) in zip(refined, spans)]
+
+
 def find_clips(video: Video, ask: AskFn, min_s: int = DEFAULT_MIN_S, max_s: int = DEFAULT_MAX_S,
                max_clips: int = MAX_CLIPS, direction: str = "") -> list[Clip]:
     sentences = split_sentences(video.words)
@@ -120,4 +206,4 @@ def find_clips(video: Video, ask: AskFn, min_s: int = DEFAULT_MIN_S, max_s: int 
     clips = moments_to_clips(video, sentences, answer.get("moments", []), min_s, max_s, max_clips, video.shape)
     if not clips:
         raise RuntimeError("The AI did not return any usable moments for this video.")
-    return clips
+    return refine_edges(video, clips, ask, min_s, max_s)

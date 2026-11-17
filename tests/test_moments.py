@@ -1,5 +1,5 @@
 from app.model import Video, Word
-from app.moments import build_prompt, find_clips, moments_to_clips
+from app.moments import apply_edges, build_prompt, find_clips, moments_to_clips
 from app.sentences import split_sentences
 from app.youtube import has_word_timing
 
@@ -77,3 +77,48 @@ def test_find_clips_uses_the_given_ai_and_shape():
 def test_line_level_captions_are_detected():
     assert has_word_timing([{"word": "hello"}, {"word": "there"}])
     assert not has_word_timing([{"word": "hello there friend"}, {"word": "how are you"}])
+
+
+def _clip(first, last, title="t"):
+    from app.model import Clip
+    return Clip(index=0, first_word=first, last_word=last, shape="9:16", title=title, hook="", description="", score=8)
+
+
+def test_refined_edges_are_applied_inside_their_windows():
+    v = video()  # 8 words per 5 s
+    clips = [_clip(40, 79)]
+    out = apply_edges(v, clips, {"clips": [{"clip": 0, "first_word": 36, "last_word": 83}]}, 20, 60)
+    assert (out[0].first_word, out[0].last_word) == (36, 83)
+
+
+def test_refined_edges_outside_window_too_short_or_overlapping_are_ignored():
+    v = video()
+    clips = [_clip(40, 79), _clip(90, 130)]
+    bad = {"clips": [{"clip": 0, "first_word": 0, "last_word": 79},      # outside the start window
+                     {"clip": 1, "first_word": 120, "last_word": 125}]}  # far too short
+    assert [(c.first_word, c.last_word) for c in apply_edges(v, clips, bad, 20, 60)] == [(40, 79), (90, 130)]
+    overlap = {"clips": [{"clip": 0, "first_word": 40, "last_word": 95}]}
+    assert apply_edges(v, clips, overlap, 20, 60)[0].last_word == 79
+
+
+def test_find_clips_survives_a_failed_edge_pass():
+    from app.ai import AIUnavailable
+    calls = []
+
+    def ask(prompt, schema, system):
+        calls.append(schema)
+        if len(calls) == 2:
+            raise AIUnavailable("limit")
+        return {"moments": [{"first_sentence": 5, "last_sentence": 9, "title": "x", "hook": "h", "description": "d", "score": 8}]}
+
+    clips = find_clips(video(), ask, 20, 60)
+    assert len(clips) == 1 and len(calls) == 2
+
+
+def test_long_unpunctuated_run_breaks_at_its_biggest_pause():
+    words, t = [], 0.0
+    for i in range(40):  # contiguous YouTube-style timings; word 22 hides a long pause
+        d = 1.1 if i == 22 else 0.2
+        words.append(Word(id=i, text="word", display="word", start=t, end=t + d)); t += d
+    sentences = split_sentences(words)
+    assert sentences[0][-1].id == 22
