@@ -197,6 +197,23 @@ def apply_edges(video: Video, clips: list[Clip], answer: dict, min_s: float, max
     return result
 
 
+# A Hindi clause ends on its auxiliary; a clip that stops one word before it sounds cut off.
+CLAUSE_ENDINGS = {"hai", "hain", "hu", "hoon", "hun", "tha", "thi", "the", "ho", "hoga", "hogi", "honge", "gaya", "gayi", "na"}
+
+
+def land_ending(video: Video, clip: Clip, next_first: int | None) -> Clip:
+    """Pull in up to two trailing auxiliaries ('kar sakte' -> 'kar sakte hain'), never into the next clip."""
+    last = clip.last_word
+    for _ in range(2):
+        nxt = last + 1
+        if nxt >= len(video.words) or (next_first is not None and nxt >= next_first):
+            break
+        if video.words[nxt].display.lower().strip(".,?!।") not in CLAUSE_ENDINGS:
+            break
+        last = nxt
+    return clip if last == clip.last_word else clip.model_copy(update={"last_word": last})
+
+
 def refine_edges(video: Video, clips: list[Clip], ask: AskFn, min_s: int, max_s: int) -> list[Clip]:
     """Second pass: snap each clip to a clean opening and a landed ending. Best effort; keeps edges on failure."""
     if not clips:
@@ -204,8 +221,10 @@ def refine_edges(video: Video, clips: list[Clip], ask: AskFn, min_s: int, max_s:
     try:
         answer = ask(build_edge_prompt(video, clips, min_s, max_s), EDGE_SCHEMA, SYSTEM)
     except (AIError, AIUnavailable):
-        return clips
+        answer = {}
     refined = apply_edges(video, clips, answer, min_s, max_s)
+    starts = sorted(c.first_word for c in refined)
+    refined = [land_ending(video, c, next((f for f in starts if f > c.last_word), None)) for c in refined]
     spans = [(video.words[c.first_word].start, video.words[c.last_word].end) for c in refined]
     return [c.model_copy(update={"retention": score_range(video.heatmap, a, b),
                                  "mentions": mentions_in(video.comments, a, b) if video.comments else None})

@@ -128,3 +128,12 @@ def test_hashtags_are_cleaned():
     from app.moments import clean_hashtags
     assert clean_hashtags("#Health, longevity #health #raj-shamani") == "#health #longevity #rajshamani"
     assert clean_hashtags("") == ""
+
+
+def test_ending_pulls_in_the_hindi_auxiliary_but_not_into_the_next_clip():
+    from app.moments import land_ending
+    texts = ["wo", "sab", "solve", "kar", "sakte", "hain", "agar", "ye"]
+    v = video().model_copy(update={"words": [Word(id=i, text=t, display=t, start=i, end=i + 1) for i, t in enumerate(texts)]})
+    assert land_ending(v, _clip(0, 4), None).last_word == 5
+    assert land_ending(v, _clip(0, 4), 5).last_word == 4
+    assert land_ending(v, _clip(0, 6), None).last_word == 6
