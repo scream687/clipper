@@ -110,8 +110,8 @@ def test_shape_sets_output_size():
     v = video()
     sizes = {s: (build_plan(v, Clip(index=0, first_word=0, last_word=3, shape=s)).width,
                  build_plan(v, Clip(index=0, first_word=0, last_word=3, shape=s)).height)
-             for s in ("9:16", "1:1", "16:9")}
-    assert sizes == {"9:16": (1080, 1920), "1:1": (1080, 1080), "16:9": (1920, 1080)}
+             for s in ("9:16", "4:5", "1:1", "16:9")}
+    assert sizes == {"9:16": (1080, 1920), "4:5": (1080, 1350), "1:1": (1080, 1080), "16:9": (1920, 1080)}
 
 
 def test_swear_words_are_starred_and_give_beep_intervals():
@@ -156,3 +156,81 @@ def test_fit_keys_become_output_time_whole_frame_spans():
     seg2_out = (first.end_frame - first.start_frame) / FPS
     expected = (seg2_out, seg2_out + 12.0 - second.start_frame / FPS)
     assert [(round(a, 3), round(b, 3)) for a, b in plan.fit_spans] == [tuple(round(v, 3) for v in expected)]
+
+
+def test_card_canvas_is_centred_inside_the_padding_and_keeps_the_source_shape():
+    from app.model import Clip
+    v = _video_for_canvas()
+    plan = build_plan(v, Clip(index=0, first_word=0, last_word=3, framing="fill", padding=10, radius=40,
+                              background="gradient", bg_color="#112233", bg_color2="#445566"))
+    c = plan.canvas
+    assert c["card_w"] <= plan.width * 0.8 + 1 and abs(c["card_w"] / c["card_h"] - 16 / 9) < 0.02
+    assert c["card_x"] == (plan.width - c["card_w"]) // 2 and c["card_y"] == (plan.height - c["card_h"]) // 2
+    assert c["card_w"] % 2 == 0 and c["card_h"] % 2 == 0
+    assert (c["background"], c["color"], c["color2"], c["radius"]) == ("gradient", "#112233", "#445566", 40)
+
+
+def test_default_canvas_is_the_old_whole_frame_on_blur():
+    from app.model import Clip
+    plan = build_plan(_video_for_canvas(), Clip(index=0, first_word=0, last_word=3, framing="fill"))
+    assert plan.canvas["background"] == "blur" and plan.canvas["radius"] == 0 and plan.canvas["card_w"] == plan.width
+
+
+def _video_for_canvas():
+    from app.model import Video, Word
+    words = [Word(id=i, text=f"w{i}", display=f"w{i}", start=i, end=i + 0.5) for i in range(4)]
+    return Video(id="v", title="t", duration=10, fps=25, width=1920, height=1080, words=words)
+
+
+def test_captions_move_below_a_whole_frame_picture():
+    from app.model import Clip
+    plan = build_plan(_video_for_canvas(), Clip(index=0, first_word=0, last_word=3, framing="fill", look="build"))
+    c = plan.canvas
+    assert plan.caption_y * plan.height - plan.style["line_px"] * plan.style["max_lines"] / 2 >= c["card_y"] + c["card_h"]
+
+
+def test_split_puts_the_whole_facecam_on_top_and_the_video_below():
+    from app.model import Clip
+    v = _video_for_canvas()
+    plan = build_plan(v, Clip(index=0, first_word=0, last_word=3, framing="split", cam_box=[0.78, 0.0, 0.22, 0.24]))
+    sp = plan.split
+    x, y, w, h = sp["top"]
+    assert abs(x - 0.78 * v.width) <= 2 and abs(w - 0.22 * v.width) <= 4  # the cam is wider than the top: kept whole across
+    assert abs(sp["top_h"] - plan.width * (0.24 * v.height) / (0.22 * v.width)) <= 2  # the top takes the cam's own shape
+    assert abs(sp["crop_w"] / sp["crop_h"] - plan.width / (plan.height - sp["top_h"])) < 0.02 and sp["bottom_cx"] == 0.5
+    assert plan.caption_y == sp["top_h"] / plan.height  # captions on the seam
+    assert plan.style["hook"]["y"] < 0.05  # the hook clears the streamer's face
+    assert sp["bottom_x"][1] + sp["crop_w"] <= 0.78 * v.width  # the video below never shows the facecam again
+
+
+def test_split_uses_the_users_crop_and_without_a_facecam_the_followed_face():
+    from app.model import Clip, CropKey
+    v = _video_for_canvas()
+    mine = build_plan(v, Clip(index=0, first_word=0, last_word=3, framing="split", cam_box=[0.78, 0.0, 0.22, 0.24],
+                              split_cam=[0.1, 0.1, 0.2, 0.2], split_bottom=0.3))
+    assert mine.split["top"][0] < 0.2 * v.width and mine.split["bottom_cx"] == 0.3
+    none = build_plan(v, Clip(index=0, first_word=0, last_word=3, framing="split", cam_box=[], auto_keys=[CropKey(t=0, cx=0.45)]))
+    x, y, w, h = none.split["top"]
+    assert none.split["top_h"] * 2 == none.height and h == v.height and abs(x + w / 2 - 0.45 * v.width) <= 2
+
+
+def test_music_logo_and_follow_badge_reach_the_plan(monkeypatch):
+    from app import assets
+    from app.model import Clip
+    monkeypatch.setattr(assets, "logo_size", lambda: (400, 200))
+    clip = Clip(index=0, first_word=0, last_word=3, music="beat.mp3", music_volume=20, music_peak=60, riser_s=2,
+                show_logo=True, logo_corner="br", logo_size=20, show_follow=True)
+    plan = build_plan(_video_for_canvas(), clip, handle="@me")
+    assert plan.music == {"file": "beat.mp3", "volume": 0.2, "peak": 0.6, "riser_s": 2.0}
+    lg = plan.logo
+    assert lg["w"] == round(plan.width * 0.2) // 2 * 2 and lg["h"] == lg["w"] // 2
+    assert lg["x"] + lg["w"] < plan.width and lg["y"] + lg["h"] < plan.height and lg["x"] > plan.width / 2
+    assert plan.follow.lines == ["Follow @me for more"] and abs(plan.follow.end - plan.duration) < 1e-6
+
+
+def test_no_logo_file_means_no_logo(monkeypatch):
+    from app import assets
+    from app.model import Clip
+    monkeypatch.setattr(assets, "logo_size", lambda: None)
+    plan = build_plan(_video_for_canvas(), Clip(index=0, first_word=0, last_word=3, show_logo=True))
+    assert plan.logo is None and plan.music is None and plan.follow is None

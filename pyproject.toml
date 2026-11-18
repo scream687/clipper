@@ -23,5 +23,6 @@ dev = ["pytest", "httpx"]
 package = false
 
 [tool.pytest.ini_options]
+markers = ["hyperframes: renders the real HyperFrames text layer (needs Node; slow)"]
 pythonpath = ["."]
 testpaths = ["tests"]

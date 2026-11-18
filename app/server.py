@@ -1,25 +1,26 @@
 """Local web server for the clipper. Binds to 127.0.0.1 only (see run.sh)."""
 
+import io
 import json
 import os
+import subprocess
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
-from app import ROOT, SETTINGS_FILE, ai, channels, cleanup, library, opusclip, queue
-from app.model import Clip, CropKey, FramingMode, Look, Shape, Video
+from app import FFMPEG, ROOT, SETTINGS_FILE, ai, assets, channels, cleanup, house, library, opusclip, queue, sfx, trends
+from app.model import HEX_COLOUR, Background, Clip, CropKey, FramingMode, Look, Shape, UnitFloat, Video
 from app.emoji import is_emoji
 from app.moments import clean_hashtags, find_clips
-from app.pipeline import add_clips, analyse, create_from_upload, create_from_youtube
+from app.pipeline import add_clips, analyse, create_from_upload, create_from_youtube, look_for_facecam
 from app.plan import FONTS, build_plan
-from app.render import render
 
 WEB_DIR = ROOT / "web"
 YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
@@ -30,10 +31,10 @@ MAX_TEXT = 300
 SECURITY_HEADERS = {
     "Content-Security-Policy": (
         "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; "
-        "media-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+        "media-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'self'"
     ),
     "X-Content-Type-Options": "nosniff",
-    "X-Frame-Options": "DENY",
+    "X-Frame-Options": "SAMEORIGIN",  # the editor frames its own text layer (web/overlay/)
     "Referrer-Policy": "no-referrer",
     "Cache-Control": "no-cache",
 }
@@ -92,8 +93,14 @@ def get_clip_or_404(video_id: str, index: int) -> Clip:
 
 class SettingsIn(BaseModel):
     handle: str = Field(default="", max_length=60)
+    brand: str = Field(default="", max_length=50)  # display name on the X post template
     channels: list[str] | None = Field(default=None, max_length=50)
     opusclip_key: str = Field(default="", max_length=500)  # blank keeps the saved one
+    pexels_key: str = Field(default="", max_length=200)    # blank keeps the saved one
+    upcoming: list[str] | None = Field(default=None, max_length=20)        # "2026-11-19 GTA 6 / GTA VI"
+    trend_creators: list[str] | None = Field(default=None, max_length=60)
+    export_quality: Literal["1080", "4k"] = "1080"
+    export_fps: Literal["source", "30", "60"] = "source"
 
 
 def load_settings() -> dict[str, Any]:
@@ -115,17 +122,26 @@ def save_settings(settings: dict[str, Any]) -> None:
 @app.get("/api/settings")
 def get_settings() -> dict[str, Any]:
     settings = load_settings()
-    return {"handle": settings.get("handle", ""), "channels": settings.get("channels", channels.DEFAULT_CHANNELS),
-            "has_opusclip_key": bool(settings.get("opusclip_key"))}
+    upcoming, creators = trends.settings()
+    return {"handle": settings.get("handle", ""), "brand": settings.get("brand", ""), "channels": settings.get("channels", channels.DEFAULT_CHANNELS),
+            "has_opusclip_key": bool(settings.get("opusclip_key")), "has_pexels_key": bool(settings.get("pexels_key")),
+            "upcoming": [f"{e['date']} {' / '.join(e['terms'])}" for e in upcoming], "trend_creators": creators,
+            "export_quality": settings.get("export_quality", "1080"), "export_fps": settings.get("export_fps", "source")}
 
 
 @app.put("/api/settings")
 def put_settings(body: SettingsIn) -> dict[str, Any]:
-    update = {"handle": body.handle.strip()}
+    update = {"handle": "".join(body.handle.split()), "brand": body.brand.strip(), "export_quality": body.export_quality, "export_fps": body.export_fps}  # a handle has no spaces: "@  name" -> "@name"
     if body.channels is not None:
         update["channels"] = channels.clean_channels(body.channels)
+    if body.upcoming is not None:
+        update["upcoming"] = trends.parse_upcoming(body.upcoming)
+    if body.trend_creators is not None:
+        update["trend_creators"] = channels.clean_channels(body.trend_creators, limit=trends.MAX_CREATORS)
     if body.opusclip_key.strip():
         update["opusclip_key"] = body.opusclip_key.strip()
+    if body.pexels_key.strip():
+        update["pexels_key"] = body.pexels_key.strip()
     save_settings({**load_settings(), **update})
     return get_settings()
 
@@ -150,6 +166,31 @@ def ai_base_url(body: AIIn) -> str:
     if body.provider != ai.CLAUDE_CODE and (urlparse(url).scheme not in ("http", "https") or not urlparse(url).hostname):
         raise HTTPException(422, "The API address must be a full http:// or https:// URL.")
     return url
+
+
+class LookFrom(BaseModel):
+    video_id: str
+    index: int
+
+
+@app.put("/api/house-look")
+def save_house_look(body: LookFrom) -> dict[str, Any]:
+    """Make this clip's look the one every new clip starts with."""
+    get_video_or_404(body.video_id)
+    look = house.look_of(get_clip_or_404(body.video_id, body.index))
+    save_settings({**load_settings(), "house_look": look})
+    return look
+
+
+@app.post("/api/videos/{video_id}/apply-look")
+def apply_look(video_id: str, body: LookFrom) -> dict[str, int]:
+    """Copy one clip's look to every other clip of the video."""
+    get_video_or_404(video_id)
+    look = house.look_of(get_clip_or_404(video_id, body.index))
+    others = [c for c in library.load_clips(video_id) if c.index != body.index]
+    for clip in others:
+        library.save_clip(video_id, house.with_look(clip, look))
+    return {"updated": len(others)}
 
 
 @app.get("/api/ai")
@@ -189,10 +230,24 @@ def ai_models(body: AIIn) -> list[dict[str, Any]]:
 @app.get("/api/channels")
 def watched_channels() -> list[dict[str, Any]]:
     """Latest uploads of the watched channels; `added` marks the ones already in the library."""
-    added = {v.url.split("v=", 1)[-1].split("&", 1)[0] for v in library.list_videos() if "v=" in v.url}
-    added |= {v.url.rsplit("/", 1)[-1].split("?", 1)[0] for v in library.list_videos() if "youtu.be/" in v.url}
+    added = _library_ids()
     result = channels.latest_for(get_settings()["channels"])
     return [{**c, "videos": [{**v, "added": v["id"] in added} for v in c["videos"]]} for c in result]
+
+
+def _library_ids() -> set[str]:
+    videos = library.list_videos()
+    ids = {v.url.split("v=", 1)[-1].split("&", 1)[0] for v in videos if "v=" in v.url}
+    return ids | {v.url.rsplit("/", 1)[-1].split("?", 1)[0] for v in videos if "youtu.be/" in v.url}
+
+
+@app.get("/api/trends")
+def trending() -> dict[str, Any]:
+    """Upcoming events, India's top searches, and creator uploads beating their usual views."""
+    upcoming, creators = trends.settings()
+    added = _library_ids()
+    return {"upcoming": trends.upcoming_now(upcoming), "searches": trends.searches()[:8],
+            "videos": [{**v, "added": v["id"] in added} for v in trends.videos(creators)]}
 
 
 # ---------- videos ----------
@@ -204,6 +259,7 @@ class NewVideo(BaseModel):
     min_s: int = Field(default=20, ge=5, le=300)
     max_s: int = Field(default=60, ge=10, le=600)
     direction: str = Field(default="", max_length=1000)
+    live_minutes: int = Field(default=30, ge=5, le=240)  # live streams: how far back to capture from now
 
     @field_validator("url")
     @classmethod
@@ -240,7 +296,7 @@ def list_videos() -> list[dict[str, Any]]:
 @app.post("/api/videos")
 def add_video(body: NewVideo) -> dict[str, Any]:
     video = create_from_youtube(body.url, {"max_clips": body.max_clips, "min_s": body.min_s, "max_s": body.max_s,
-                                           "direction": body.direction.strip()}, body.shape)
+                                           "direction": body.direction.strip(), "live_s": body.live_minutes * 60}, body.shape)
     job = queue.submit("analysis", "analyse", video.id, _analyse_job(video.id))
     return {"id": video.id, "job": job}
 
@@ -258,8 +314,11 @@ def upload_video(file: UploadFile = File(...), language: str = Form("hi"), shape
         raise HTTPException(422, "Upload an MP4, MOV, M4V, MKV or WebM video.")
     if language not in LANGUAGES:
         raise HTTPException(422, "Choose Hindi/Hinglish or English.")
-    options = NewVideo(url="https://youtu.be/upload", shape=shape, max_clips=max_clips, min_s=min_s, max_s=max_s,
-                       direction=direction)  # reuse the same limits as links
+    try:  # reuse the same limits as links; checked before the file is stored
+        options = NewVideo(url="https://youtu.be/upload", shape=shape, max_clips=max_clips, min_s=min_s, max_s=max_s,
+                           direction=direction)
+    except ValidationError as error:
+        raise HTTPException(422, "; ".join(str(e["msg"]).removeprefix("Value error, ") for e in error.errors())) from error
     video = create_from_upload(file.filename or "upload", {"max_clips": options.max_clips, "min_s": options.min_s,
                                "max_s": options.max_s, "direction": options.direction.strip(),
                                "upload_file": f"upload{suffix}"}, options.shape, language)
@@ -283,8 +342,8 @@ def retry_video(video_id: str) -> dict[str, Any]:
 @app.delete("/api/videos/{video_id}")
 def delete_video(video_id: str) -> dict[str, str]:
     get_video_or_404(video_id)
-    if queue.active_for(video_id):
-        raise HTTPException(409, "Wait for the current job on this video to finish first.")
+    if queue.busy_under(video_id):
+        raise HTTPException(409, "Wait for the current job on this video (analysis, export or OpusClip) to finish first.")
     library.delete_video(video_id)
     return {"deleted": video_id}
 
@@ -332,7 +391,14 @@ class ClipEdit(BaseModel):
     look: Look = "highlight"
     shape: Shape = "9:16"
     framing: FramingMode = "crop"
+    background: Background = "blur"
+    bg_color: str = Field(default="#111111", pattern=HEX_COLOUR)
+    bg_color2: str = Field(default="#3A2A10", pattern=HEX_COLOUR)
+    padding: int = Field(default=0, ge=0, le=20)
+    radius: int = Field(default=0, ge=0, le=80)
     manual_keys: list[CropKey] = Field(default=[], max_length=2000)
+    split_cam: list[UnitFloat] | None = Field(default=None, min_length=4, max_length=4)
+    split_bottom: float | None = Field(default=None, ge=0, le=1)
     hook: str = Field(default="", max_length=MAX_TEXT)
     show_hook: bool = True
     show_handle: bool = True
@@ -340,16 +406,43 @@ class ClipEdit(BaseModel):
     swear_filter: bool = False
     emoji_words: dict[int, str] = Field(default={}, max_length=50)
     show_emoji: bool = True
+    music: str = Field(default="", max_length=90)
+    music_volume: int = Field(default=15, ge=0, le=100)
+    music_peak: int = Field(default=15, ge=0, le=100)
+    riser_s: int = Field(default=0, ge=0, le=15)
+    show_logo: bool = False
+    logo_corner: Literal["tl", "tr", "bl", "br"] = "tr"
+    logo_size: int = Field(default=14, ge=6, le=30)
+    show_follow: bool = False
+    template: Literal["none", "tweet"] = "none"
+    tweet_theme: Literal["light", "dark"] = "light"
     title: str = Field(default="", max_length=MAX_TEXT)
     description: str = Field(default="", max_length=1000)
     hashtags: str = Field(default="", max_length=MAX_TEXT)
     status: str = Field(default="new", pattern="^(new|kept|discarded)$")
+    rating: int | None = Field(default=None, ge=1, le=10)
+    tighten: bool = True
+    punch_in: bool = True
+    sfx: bool = True
+    sfx_safe_only: bool = False
+    meme_word: int | None = None
+    emphasis_words: list[int] = []
+    show_progress: bool = True
+    broll: list[dict] = Field(default=[], max_length=10)
+    show_broll: bool = True
 
     @field_validator("emoji_words")
     @classmethod
     def emojis_are_emoji(cls, value: dict[int, str]) -> dict[int, str]:
         if not all(is_emoji(e) for e in value.values()):
             raise ValueError("Only single emoji can be added to a word")
+        return value
+
+    @field_validator("music")
+    @classmethod
+    def music_is_in_the_library(cls, value: str) -> str:
+        if value and not assets.MUSIC_NAME.fullmatch(value):
+            raise ValueError("Pick a track from the music library.")
         return value
 
     @field_validator("hashtags")
@@ -365,8 +458,16 @@ class ClipEdit(BaseModel):
         return {k: v.strip() for k, v in value.items()}
 
 
+def export_options(settings: dict[str, Any]) -> dict[str, Any]:
+    """Handle, 4K (quality 2) and output frame rate (None = the source's) from Settings."""
+    fps = settings.get("export_fps", "source")
+    return {"handle": settings.get("handle", ""), "brand": settings.get("brand", ""), "quality": 2 if settings.get("export_quality") == "4k" else 1,
+            "fps": None if fps == "source" else float(fps)}
+
+
 def _plan_for(video: Video, clip: Clip) -> dict[str, Any]:
-    return build_plan(video, clip, handle=load_settings().get("handle", "")).model_dump()
+    settings = load_settings()
+    return build_plan(video, clip, handle=settings.get("handle", ""), brand=settings.get("brand", "")).model_dump()
 
 
 def _media(video: Video, clip: Clip) -> dict[str, Any]:
@@ -385,6 +486,71 @@ def get_clip(video_id: str, index: int) -> dict[str, Any]:
     export = library.clip_dir(video_id, index) / "export.mp4"
     return {"clip": clip.model_dump(), "plan": _plan_for(video, clip), "exported": export.is_file(),
             "media": _media(video, clip), "job": (queue.active_for(f"{video_id}/{index}") or {}).get("id")}
+
+
+@app.get("/api/videos/{video_id}/clips/{index}/tweet.png")
+def get_tweet_header(video_id: str, index: int) -> Response:
+    """The X post header the export will use, for the preview."""
+    from app.template import tweet_header
+    video, clip = get_video_or_404(video_id), get_clip_or_404(video_id, index)
+    settings = load_settings()
+    plan = build_plan(video, clip, handle=settings.get("handle", ""), brand=settings.get("brand", ""))
+    if not plan.tweet:
+        _not_found("Post header")
+    buffer = io.BytesIO()
+    tweet_header(plan).save(buffer, "PNG")
+    return Response(buffer.getvalue(), media_type="image/png")
+
+
+POSTER_W = 270
+
+
+@app.get("/api/videos/{video_id}/clips/{index}/poster.jpg")
+def clip_poster(video_id: str, index: int) -> FileResponse:
+    """A small still of the clip as it will look (its crop, one second in), cached until the clip changes."""
+    video, clip = get_video_or_404(video_id), get_clip_or_404(video_id, index)
+    folder = library.clip_dir(video_id, index)
+    poster = folder / "poster.jpg"
+    if poster.is_file() and poster.stat().st_mtime >= (folder / "clip.json").stat().st_mtime:
+        return FileResponse(poster, media_type="image/jpeg")
+    try:
+        source, offset = library.media_for(video_id, clip)
+    except FileNotFoundError:
+        _not_found("Poster")
+    plan = build_plan(video, clip)
+    t_out = min(1.0, plan.duration / 2)
+    src_t = plan.segments[0].start_frame / plan.fps + t_out - offset / plan.fps
+    sw, sh = plan.source_width, plan.source_height
+    if plan.framing == "crop":
+        x = min(max(plan.crop_at(t_out) * sw - plan.crop_w / 2, 0), sw - plan.crop_w)
+        y = (sh - plan.crop_h) / 2
+        crop = f"crop=iw*{plan.crop_w / sw:.5f}:ih*{plan.crop_h / sh:.5f}:iw*{x / sw:.5f}:ih*{y / sh:.5f},"
+    else:  # whole frame or split: the middle of the picture at the clip's shape
+        crop = f"crop='min(iw,ih*{plan.width / plan.height:.5f})':ih,"
+    result = subprocess.run([FFMPEG, "-v", "error", "-y", "-ss", f"{max(src_t, 0):.3f}", "-i", str(source), "-frames:v", "1",
+                             "-vf", f"{crop}scale={POSTER_W}:-2", "-q:v", "4", str(poster)], capture_output=True)
+    if result.returncode != 0 or not poster.is_file():
+        _not_found("Poster")
+    return FileResponse(poster, media_type="image/jpeg")
+
+
+class StatusIn(BaseModel):
+    status: Literal["new", "kept", "discarded"]
+
+
+KEEP_RATING, DROP_RATING = 8, 3  # a keep or drop teaches later picks, unless the clip already has a rating
+
+
+@app.post("/api/videos/{video_id}/clips/{index}/status")
+def set_status(video_id: str, index: int, body: StatusIn) -> dict[str, Any]:
+    """Keep or drop a clip from the review feed in one request."""
+    get_video_or_404(video_id)
+    clip = get_clip_or_404(video_id, index)
+    rating = clip.rating if clip.rating is not None or body.status == "new" else (
+        KEEP_RATING if body.status == "kept" else DROP_RATING)
+    updated = clip.model_copy(update={"status": body.status, "rating": rating})
+    library.save_clip(video_id, updated)
+    return {"index": index, "status": updated.status, "rating": updated.rating}
 
 
 @app.get("/api/videos/{video_id}/clips/{index}/media.mp4")
@@ -414,6 +580,8 @@ def edit_clip(video_id: str, index: int, body: ClipEdit) -> dict[str, Any]:
             raise HTTPException(422, "The full video was cleaned up after 14 days, so this clip can only be "
                                      "trimmed within the part that was kept.")
     updated = clip.model_copy(update=body.model_dump())
+    if updated.framing == "split":
+        updated = look_for_facecam(video, updated)  # once per clip, a few seconds
     library.save_clip(video_id, updated)
     return {"clip": updated.model_dump(), "plan": _plan_for(video, updated)}
 
@@ -456,11 +624,12 @@ def export_clip(video_id: str, index: int) -> dict[str, str]:
     subject = f"{video_id}/{index}"
     if queue.active_for(subject):
         raise HTTPException(409, "This clip is already being exported.")
-    plan = build_plan(video, clip, handle=load_settings().get("handle", ""))
+    options = export_options(load_settings())
+    plan = build_plan(video, clip, handle=options["handle"], quality=options["quality"], brand=options["brand"])
     out = library.clip_dir(video_id, index) / "export.mp4"
 
     def work(log):
-        render(plan, source, out, log, frame_offset=offset)
+        cleanup.render_export(plan, source, out, log, offset=offset, fps=options["fps"], force=True)
         library.save_clip(video_id, library.load_clip(video_id, index).model_copy(update={"status": "kept"}))
         return {"video_id": video_id, "index": index, "exported_at": datetime.now().isoformat(timespec="seconds")}
 
@@ -500,8 +669,10 @@ def find_moment(video_id: str, body: FindIn) -> dict[str, str]:
         try:
             clips = find_clips(video, ai.ask_ai, min_s=o.get("min_s", 20), max_s=o.get("max_s", 60), max_clips=3,
                                direction=direction)
-        except RuntimeError as error:
-            raise RuntimeError("Claude found nothing matching that description.") from error
+        except (ai.AIUnavailable, ai.AIError) as error:
+            raise RuntimeError(f"The AI could not answer: {error}") from error
+        if not clips:
+            raise RuntimeError("The AI found nothing matching that description.")
         return {"added": add_clips(video, clips, log)}
 
     return {"job": queue.submit("analysis", "find", video_id, work)}
@@ -566,8 +737,8 @@ def export_all(video_id: str) -> dict[str, str]:
     subject = f"{video_id}/zip"
     if queue.active_for(subject):
         raise HTTPException(409, "This video's clips are already being exported.")
-    handle = load_settings().get("handle", "")
-    work = lambda log: {"video_id": video_id, "zip": cleanup.export_all(video_id, handle, log).name}
+    options = export_options(load_settings())
+    work = lambda log: {"video_id": video_id, "zip": cleanup.export_all(video_id, options, log).name}
     return {"job": queue.submit("export", "export-all", subject, work)}
 
 
@@ -579,6 +750,116 @@ def download_zip(video_id: str) -> FileResponse:
         _not_found("Zip")
     name = "".join(ch for ch in video.title if ch.isalnum() or ch in " -_").strip()[:60] or video.id
     return FileResponse(path, media_type="application/zip", filename=f"{name} clips.zip")
+
+
+# ---------- brand assets: music library and logo ----------
+
+@app.get("/api/music")
+def music_list() -> list[dict[str, Any]]:
+    return assets.list_music()
+
+
+@app.post("/api/music")
+def music_upload(file: UploadFile = File(...)) -> list[dict[str, Any]]:
+    try:
+        assets.save_music(file.filename or "", file.file)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    return assets.list_music()
+
+
+@app.get("/api/music/{name}")
+def music_file(name: str) -> FileResponse:
+    try:
+        return FileResponse(assets.music_path(name))
+    except KeyError:
+        _not_found("Track")
+
+
+@app.delete("/api/music/{name}")
+def music_delete(name: str) -> list[dict[str, Any]]:
+    try:
+        assets.delete_music(name)
+    except KeyError:
+        _not_found("Track")
+    return assets.list_music()
+
+
+@app.get("/api/logo")
+def logo_info() -> dict[str, Any]:
+    size = assets.logo_size()
+    return {"has_logo": size is not None, "width": size[0] if size else 0, "height": size[1] if size else 0}
+
+
+@app.post("/api/logo")
+def logo_upload(file: UploadFile = File(...)) -> dict[str, Any]:
+    try:
+        assets.save_logo(file.file)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    return logo_info()
+
+
+@app.delete("/api/logo")
+def logo_delete() -> dict[str, Any]:
+    assets.delete_logo()
+    return logo_info()
+
+
+@app.get("/api/logo.png")
+def logo_file() -> FileResponse:
+    if not assets.LOGO_FILE.is_file():
+        _not_found("Logo")
+    return FileResponse(assets.LOGO_FILE, media_type="image/png")
+
+
+# ---------- sound effects ----------
+
+class SoundLink(BaseModel):
+    url: str = Field(max_length=500)
+    role: str
+
+
+@app.get("/api/sfx")
+def sfx_list() -> list[dict[str, Any]]:
+    return sfx.list_sounds()
+
+
+@app.post("/api/sfx/import")
+def sfx_import(body: SoundLink) -> list[dict[str, Any]]:
+    try:
+        sfx.import_myinstants(body.url, body.role)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    except OSError as error:
+        raise HTTPException(502, f"Could not download that sound: {error}") from error
+    return sfx.list_sounds()
+
+
+@app.post("/api/sfx")
+def sfx_upload(file: UploadFile = File(...), role: str = Form("pop")) -> list[dict[str, Any]]:
+    try:
+        sfx.upload(file.filename or "", file.file, role)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    return sfx.list_sounds()
+
+
+@app.get("/api/sfx/{name}")
+def sfx_file(name: str) -> FileResponse:
+    try:
+        return FileResponse(sfx.path_of(name))
+    except KeyError:
+        _not_found("Sound")
+
+
+@app.delete("/api/sfx/{name}")
+def sfx_delete(name: str) -> list[dict[str, Any]]:
+    try:
+        sfx.delete(name)
+    except KeyError:
+        _not_found("Sound")
+    return sfx.list_sounds()
 
 
 # ---------- jobs, fonts, page ----------

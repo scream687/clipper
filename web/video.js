@@ -1,6 +1,7 @@
-// One video: progress while it is analysed, then the replay graph and its clips.
+// One video: progress while it is analysed, then the review feed: a player and the clips to keep or drop.
 
 import { api, clock, el, showAlert } from "./util.js";
+import { Preview } from "./preview.js";
 
 const POLL_MS = 1500;
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -15,6 +16,8 @@ const CLIP_TARGET_S = 35;
 const CLIP_MAX_S = 60;
 const LEAD_PAUSE_S = 0.7;
 let words = null;
+let shownId = null;          // the video whose search, zip and OpusClip messages are on screen
+const MIN_QUERY = 3;         // the server's FindIn minimum
 
 export function wireVideo() {
   el("search-form").addEventListener("submit", search);
@@ -34,14 +37,126 @@ export function wireVideo() {
   el("video-retry").addEventListener("click", async () => {
     try { await api(`/api/videos/${current}/retry`, "POST"); await showVideo(current); } catch (error) { showAlert(error.message); }
   });
+  wireReview();
 }
 
-export function leaveVideo() { clearTimeout(timer); current = null; words = null; }
+export function leaveVideo() {
+  clearTimeout(timer); current = null; words = null;
+  review.preview?.pause(); el("r-play").textContent = "Play";
+}
+
+// ---------- review feed ----------
+const review = { clips: [], selected: null, preview: null, token: 0 };
+const isOn = () => !el("view-video").hidden && !el("review").hidden;
+
+function reviewPreview() {
+  review.preview ||= new Preview({
+    stage: el("r-stage"), videos: [el("r-a"), el("r-b")], fill: el("r-fill"), split: el("r-split"), overlay: el("r-overlay"),
+    onTime: (t) => {
+      const d = review.preview?.duration || 0;
+      el("r-scrub").max = String(d);
+      if (document.activeElement !== el("r-scrub")) el("r-scrub").value = String(t);
+      el("r-time").textContent = `${clock(t)} / ${clock(d)}`;
+    },
+    onEnd: () => { el("r-play").textContent = "Play"; },
+    maxVh: 50,  // small enough that keep and drop stay on screen beside it
+  });
+  return review.preview;
+}
+
+async function selectClip(index, { play = false } = {}) {
+  const clip = review.clips.find((c) => c.index === index);
+  if (!clip) return;
+  review.selected = index;
+  el("clip-list").querySelectorAll(".clip-row").forEach((row) => {
+    const on = Number(row.dataset.index) === index;
+    row.classList.toggle("is-selected", on);
+    row.querySelector(".clip-pick").setAttribute("aria-current", on ? "true" : "false");
+    if (on && isOn()) row.scrollIntoView({ block: "nearest" });
+  });
+  showCard(clip);
+  const token = ++review.token, id = current;
+  let body;
+  try { body = await api(`/api/videos/${id}/clips/${index}`); } catch (error) { showAlert(error.message); return; }
+  if (token !== review.token || id !== current) return;
+  const preview = reviewPreview();
+  preview.pause(); el("r-play").textContent = "Play";
+  preview.tweetUrl = `/api/videos/${id}/clips/${index}/tweet.png`;
+  if (body.media.url) preview.load(body.media.url, body.media.offset);
+  preview.setPlan(body.plan);
+  preview.seek(0);
+  if (play) { await preview.toggle(); el("r-play").textContent = preview.playing ? "Pause" : "Play"; }
+}
+
+function showCard(clip) {
+  const n = review.clips.indexOf(clip) + 1;
+  const picked = clip.source === "opusclip" ? "Picked by OpusClip" : `Score ${clip.score}/10`;
+  el("r-count").textContent = `Clip ${n} of ${review.clips.length} · ${clock(clip.end - clip.start)} · ${picked}`;
+  el("r-edit").href = `#/clip/${current}/${clip.index}`;
+  el("r-keep").classList.toggle("is-on", clip.status === "kept");
+  el("r-drop").classList.toggle("is-on", clip.status === "discarded");
+}
+
+function step(delta) {
+  const at = review.clips.findIndex((c) => c.index === review.selected);
+  const next = review.clips[Math.min(Math.max(at + delta, 0), review.clips.length - 1)];
+  if (next) selectClip(next.index);
+}
+
+async function decide(status) {
+  const clip = review.clips.find((c) => c.index === review.selected);
+  if (!clip) return;
+  const value = clip.status === status ? "new" : status;  // pressing it again undoes it
+  try { await api(`/api/videos/${current}/clips/${clip.index}/status`, "POST", { status: value }); } catch (error) { showAlert(error.message); return; }
+  clip.status = value;
+  const row = el("clip-list").querySelector(`[data-index="${clip.index}"]`);
+  if (row) paintState(row, clip);
+  showTally();
+  if (value === "new") { showCard(clip); return; }
+  const at = review.clips.indexOf(clip);  // on to the next clip still waiting for a decision
+  const next = review.clips.slice(at + 1).find((c) => c.status === "new") || review.clips[at + 1];
+  if (next) selectClip(next.index, { play: true }); else showCard(clip);
+}
+
+function showTally() {
+  const kept = review.clips.filter((c) => c.status === "kept").length;
+  const dropped = review.clips.filter((c) => c.status === "discarded").length;
+  const left = review.clips.length - kept - dropped;
+  el("review-tally").textContent = `${review.clips.length} clips · ${kept} kept · ${dropped} dropped${left ? ` · ${left} to review` : " · all reviewed"}`;
+  el("zip-export").textContent = kept ? `Export ${kept} kept clip${kept === 1 ? "" : "s"}` : `Export all ${review.clips.length - dropped} as zip`;
+}
+
+function wireReview() {
+  el("clip-list").addEventListener("click", (e) => {
+    const row = e.target.closest(".clip-row");
+    if (row) selectClip(Number(row.dataset.index));
+  });
+  el("clip-list").addEventListener("dblclick", (e) => {
+    const row = e.target.closest(".clip-row");
+    if (row) location.hash = `#/clip/${current}/${row.dataset.index}`;
+  });
+  el("r-keep").addEventListener("click", () => decide("kept"));
+  el("r-drop").addEventListener("click", () => decide("discarded"));
+  el("r-play").addEventListener("click", async () => {
+    const p = reviewPreview();
+    await p.toggle(); el("r-play").textContent = p.playing ? "Pause" : "Play";
+  });
+  el("r-scrub").addEventListener("input", (e) => review.preview?.seek(Number(e.target.value)));
+  document.addEventListener("keydown", (e) => {
+    if (!isOn() || e.metaKey || e.ctrlKey || e.altKey || e.target.closest("input, textarea, select")) return;
+    if ((e.key === " " || e.key === "Enter") && e.target.closest("button, a, summary")) return;
+    const actions = { j: () => step(1), k: () => step(-1), y: () => decide("kept"), n: () => decide("discarded"),
+                      e: () => { if (review.selected !== null) location.hash = el("r-edit").getAttribute("href"); },
+                      " ": () => el("r-play").click(), ArrowDown: () => step(1), ArrowUp: () => step(-1) };
+    const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    if (actions[key]) { e.preventDefault(); actions[key](); }
+  });
+}
 
 async function search(event) {
   event.preventDefault();
   const query = el("search-input").value.trim();
-  if (query.length < 2) return;
+  if (query.length < MIN_QUERY) { el("search-state").textContent = `Type at least ${MIN_QUERY} letters.`; return; }
   const id = current;
   el("search-hits").replaceChildren();
   if (event.submitter?.value === "ask") {
@@ -93,6 +208,7 @@ function hitRow(i, len) {
 async function makeClipFromHit(event) {
   const button = event.target.closest("[data-word]");
   if (!button) return;
+  words = words || await api(`/api/videos/${current}/words`);
   const hit = Number(button.dataset.word);
   let first = hit;  // start at the pause before the hit, at most 15 words back
   while (first > 0 && hit - first < 15 && words[first].start - words[first - 1].end < LEAD_PAUSE_S) first -= 1;
@@ -109,17 +225,30 @@ async function makeClipFromHit(event) {
 export async function showVideo(id) {
   clearTimeout(timer);
   current = id;
+  if (shownId !== id) {  // messages from the previous video must not carry over
+    shownId = id; words = null; review.selected = null;
+    review.preview?.pause();
+    ["search-hits"].forEach((name) => el(name).replaceChildren());
+    ["search-state", "zip-state", "opus-state"].forEach((name) => { el(name).textContent = ""; });
+  }
   let video;
-  try { video = await api(`/api/videos/${id}`); } catch (error) { showAlert(error.message); return; }
+  try { video = await api(`/api/videos/${id}`); } catch (error) {
+    showAlert(error.message);
+    if (current === id) timer = setTimeout(() => showVideo(id), POLL_MS * 2);  // keep following through a server restart
+    return;
+  }
   if (current !== id) return;
+  showAlert("");
   document.title = `${video.title} · Clipper`;
   el("video-title").textContent = video.title;
   el("video-meta").textContent = [video.channel, video.duration ? clock(video.duration) : "", video.shape].filter(Boolean).join(" · ");
 
-  const busy = Boolean(video.job) || !["ready", "failed"].includes(video.stage);
-  el("video-progress").hidden = !(busy || video.stage === "failed");
-  el("video-retry").hidden = video.stage !== "failed" || busy;
-  el("video-stage").textContent = video.stage === "failed" ? `Stopped: ${video.error || "unknown error"}` : `${video.stage}…`;
+  const busy = Boolean(video.job);
+  const stuck = !busy && !["ready", "failed"].includes(video.stage);  // e.g. an upload that broke off
+  el("video-progress").hidden = !(busy || stuck || video.stage === "failed");
+  el("video-retry").hidden = busy || !(stuck || video.stage === "failed");
+  el("video-stage").textContent = video.stage === "failed" ? `Stopped: ${video.error || "unknown error"}`
+    : stuck ? "Stopped before it finished. Try again to restart it." : `${video.stage}…`;
   if (video.job) {
     try {
       const job = await api(`/api/jobs/${video.job}`);
@@ -130,9 +259,13 @@ export async function showVideo(id) {
     el("video-log").textContent = "";
   }
 
+  el("review").hidden = !video.clips.length;
   el("video-graph-wrap").hidden = !video.clips.length;
   if (video.clips.length) drawGraph(video);
+  review.clips = video.clips;
   el("clip-list").replaceChildren(...video.clips.map((c) => clipRow(video, c)));
+  showTally();
+  if (video.clips.length && !video.clips.some((c) => c.index === review.selected)) selectClip(video.clips[0].index);
   el("zip-bar").hidden = !video.clips.length || busy;
   el("search-form").hidden = video.stage !== "ready";
   el("zip-download").hidden = !video.zip_ready;
@@ -226,10 +359,18 @@ function drawGraph(video) {
     : "YouTube has no replay graph for this video, so clips were picked from the transcript alone.";
 }
 
+function paintState(node, clip) {
+  const label = { kept: "Kept", discarded: "Dropped" }[clip.status] || "";
+  node.querySelector(".clip-state").textContent = label;
+  node.classList.toggle("is-kept", clip.status === "kept");
+  node.classList.toggle("is-discarded", clip.status === "discarded");
+}
+
 function clipRow(video, clip) {
   const node = el("clip-row").content.firstElementChild.cloneNode(true);
-  node.querySelector(".clip-link").href = `#/clip/${video.id}/${clip.index}`;
-  node.querySelector(".clip-time").textContent = `${clock(clip.start)} – ${clock(clip.end)}`;
+  node.dataset.index = clip.index;
+  node.querySelector(".clip-poster").src = `/api/videos/${video.id}/clips/${clip.index}/poster.jpg`;
+  node.querySelector(".clip-time").textContent = `${clock(clip.start)} · ${clock(clip.end - clip.start)}`;
   node.querySelector(".clip-title").textContent = clip.title;
   node.querySelector(".clip-hook").textContent = clip.hook;
   const replay = node.querySelector(".replay");
@@ -241,6 +382,7 @@ function clipRow(video, clip) {
   const said = clip.mentions ? ` · ${clip.mentions} comment${clip.mentions === 1 ? "" : "s"} point here` : "";
   const picked = clip.source === "opusclip" ? "Picked by OpusClip" : `Score ${clip.score}/10`;
   node.querySelector(".clip-status").textContent = (clip.exported ? "Exported" : picked) + said;
-  if (clip.status === "discarded") node.classList.add("is-discarded");
+  paintState(node, clip);
+  if (clip.index === review.selected) node.classList.add("is-selected");
   return node;
 }

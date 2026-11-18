@@ -1,24 +1,34 @@
 """Analyse a video in resumable stages. Each stage skips itself when its output already exists,
 so a restart picks up where it stopped."""
 
+import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
 from app import library
-from app.ai import AIUnavailable, ask_ai
+from app.ai import AIError, AIUnavailable, ask_ai
+from app.house import classify, saved_look, with_look
+from app.pacing import tighten
+from app.edits import decorate
 from app.loudness import loud_seconds, loudness_clips, measure as measure_loudness
-from app.comments import fetch_comments
-from app.framing import auto_framing
+from app.comments import fetch_comments, keep_for_ai, match_quotes
+from app.framing import WIDE_SHOT_TILES, WIDE_SHOT_WIDTH, auto_framing, find_facecam
 from app.media import make_proxy, normalise_upload, probe, remove_stale_partials
 from app.model import Clip, Video, Word
 from app.moments import find_clips
+from app.taste import taste_note
+from app.trends import current_note
 from app.transcribe import transcribe
 from app.sentences import split_sentences
 from app.translit import romanize_in_context
-from app.youtube import download_caption_words, download_source, fetch_info, find_orig_caption_code, has_word_timing
+from app.youtube import (LIVE_WINDOW_S, download_caption_words, download_live_window, download_source, fetch_info,
+                         find_orig_caption_code, has_word_timing)
 
 LogFn = Callable[[str], None]
+_BACKGROUND = ThreadPoolExecutor(max_workers=2)  # comment reads run beside the download
 FRAMING_MARGIN_S = 10.0  # frame a little beyond the clip so trimming outward still has face data
 
 
@@ -57,28 +67,95 @@ def _transcript(video: Video, source, folder, log: LogFn) -> list[dict]:
     return transcribe(source, folder / "work", (video.language or "hi").split("-")[0], log)
 
 
-def frame_clip(video: Video, clip: Clip) -> Clip:
+def _window(video: Video, clip: Clip) -> tuple[float, float]:
     by_id = {w.id: w for w in video.words}
-    start = max(0.0, by_id[clip.first_word].start - FRAMING_MARGIN_S)
-    end = by_id[clip.last_word].end + FRAMING_MARGIN_S
-    framing, keys = auto_framing(library.video_dir(video.id) / "proxy.mp4", start, end)
+    return max(0.0, by_id[clip.first_word].start - FRAMING_MARGIN_S), by_id[clip.last_word].end + FRAMING_MARGIN_S
+
+
+def look_for_facecam(video: Video, clip: Clip) -> Clip:
+    """Find the clip's facecam once ([] remembers there is none). Needs the preview copy, which cleanup removes."""
+    proxy = library.video_dir(video.id) / "proxy.mp4"
+    if clip.cam_box is not None or not proxy.is_file():
+        return clip
+    return clip.model_copy(update={"cam_box": find_facecam(proxy, *_window(video, clip)) or []})
+
+
+GAME_LIKE = ("gameplay", "stream")  # faces in these are game characters or a corner facecam, not a shot to follow
+
+
+def frame_clip(video: Video, clip: Clip) -> Clip:
+    """Pick the framing by content type: a game or stream with a facecam is split (cam on top, game below);
+    a game without one shows the whole frame; everything else follows the speaker's face."""
+    vertical = clip.shape != "16:9"
+    if video.content in GAME_LIKE and vertical:
+        framed = look_for_facecam(video, clip.model_copy(update={"framed": True}))
+        if framed.cam_box:
+            framed = framed.model_copy(update={"framing": "split", "auto_keys": []})
+            library.save_clip(video.id, framed)
+            return framed
+        if video.content == "gameplay":
+            framed = framed.model_copy(update={"framing": "fill", "auto_keys": []})
+            library.save_clip(video.id, framed)
+            return framed
+    proxy = library.video_dir(video.id) / "proxy.mp4"
+    framing, keys = auto_framing(proxy, *_window(video, clip))
+    if framing == "fill" and video.content in ("show", "vlog"):  # small faces on a stage or far from the camera
+        framing, keys = auto_framing(proxy, *_window(video, clip), width=WIDE_SHOT_WIDTH, tiles=WIDE_SHOT_TILES)
     framed = clip.model_copy(update={"framing": framing, "auto_keys": keys, "framed": True})
+    # No face to follow: a screen recording may have a facecam. Talks, shows and vlogs never do (a small face on a
+    # stage is a person in a wide shot, not an overlay).
+    if framing == "fill" and vertical and video.content not in ("talk", "show", "vlog"):
+        framed = look_for_facecam(video, framed)
+        if framed.cam_box:
+            framed = framed.model_copy(update={"framing": "split"})
     library.save_clip(video.id, framed)
     return framed
 
 
+_index_lock = threading.Lock()  # two jobs adding clips at once (OpusClip + Ask AI) must not share an index
+
+
 def add_clips(video: Video, clips: list[Clip], log: LogFn) -> list[int]:
     """Append clips after the existing ones and frame them. Returns their indices."""
-    start = max((c.index for c in library.load_clips(video.id)), default=-1) + 1
-    added = []
-    for offset, clip in enumerate(clips):
-        clip = clip.model_copy(update={"index": start + offset, "shape": video.shape})
+    with _index_lock:  # ponytail: one process-wide lock; per-video locks if adding clips ever gets busy
+        start = max((c.index for c in library.load_clips(video.id)), default=-1) + 1
+        look = saved_look()
+        placed = [tighten(video, with_look(clip.model_copy(update={"index": start + n, "shape": video.shape}), look))
+                  for n, clip in enumerate(clips)]
+        for clip in placed:
+            library.save_clip(video.id, clip)
+    placed = decorate(video, placed, ask_ai, log)
+    for clip in placed:
         library.save_clip(video.id, clip)
+    added = []
+    for clip in placed:
         if (library.video_dir(video.id) / "proxy.mp4").exists():
             frame_clip(video, clip)
         added.append(clip.index)
         log(f"Added clip {clip.index + 1}: {clip.title}")
     return added
+
+
+def _match_comments(video: Video, reading, comments_file: Path, log: LogFn) -> Video:
+    """Wait for the background comment read, keep the raw list on disk, and give the video the comments
+    that point at a moment (timestamp or quoted line) plus the most-liked rest."""
+    try:
+        if reading is not None:
+            comments = reading.result()
+            comments_file.write_text(json.dumps(comments, ensure_ascii=False), encoding="utf-8")
+        else:
+            comments = json.loads(comments_file.read_text(encoding="utf-8"))
+        comments = match_quotes(comments, video.words)
+        keep = keep_for_ai(comments)
+        stamped = sum(1 for c in comments if c["times"])
+        quoted = sum(1 for c in comments if c.get("quoted"))
+        log(f"Read {len(comments)} comments: {stamped} give a timestamp, {quoted} quote a line")
+    except Exception as error:  # comments off or blocked: carry on without them
+        log(f"Could not read comments ({str(error)[:120]}); continuing without them")
+        keep = []
+    video = video.model_copy(update={"comments": keep, "options": {**video.options, "comments_read": True}})
+    library.save_video(video)
+    return video
 
 
 def analyse(video_id: str, log: LogFn) -> Video:
@@ -89,33 +166,40 @@ def analyse(video_id: str, log: LogFn) -> Video:
         if video.url and not video.channel:
             video = _stage(video, "Reading video details", log)
             info = fetch_info(video.url)
-            code = find_orig_caption_code(info.get("automatic_captions"))
+            live = bool(info.get("is_live"))
+            code = None if live else find_orig_caption_code(info)  # a running stream has no captions yet: Whisper
+            title = info.get("title") or video.url
+            if live:
+                title = f"{title} (live, last {round(video.options.get('live_s', LIVE_WINDOW_S) / 60)} min to {datetime.now():%H:%M})"
             video = video.model_copy(update={
-                "title": info.get("title") or video.url, "channel": info.get("channel") or info.get("uploader") or "",
+                "title": title, "channel": info.get("channel") or info.get("uploader") or "",
                 "duration": float(info.get("duration") or 0), "heatmap": list(info.get("heatmap") or []),
                 "language": (code or info.get("language") or "en").split("-")[0],
-                "options": {**video.options, "caption_code": code}})
+                "options": {**video.options, "caption_code": code, "live": live, "comments_read": live or video.options.get("comments_read", False)}})
             library.save_video(video)
+            if live:  # captured now, while it runs: the window ends at this moment
+                video = _stage(video, "Capturing the live stream", log)
+                download_live_window(info, folder / "source.mp4", video.options.get("live_s", LIVE_WINDOW_S), log)
 
-        if video.url and not video.options.get("comments_read"):
-            video = _stage(video, "Reading comments", log)
-            try:
-                comments = fetch_comments(video.url, video.duration)
-                pointed = [c for c in comments if c["times"]]
-                top = sorted(comments, key=lambda c: -c["likes"])[:60]
-                keep = pointed + [c for c in top if c not in pointed]
-                log(f"Read {len(comments)} comments, {len(pointed)} point at a moment")
-            except Exception as error:  # comments off or blocked: carry on without them
-                log(f"Could not read comments ({str(error)[:120]}); continuing without them")
-                keep = []
-            video = video.model_copy(update={"comments": keep, "options": {**video.options, "comments_read": True}})
-            library.save_video(video)
+        comments_file = folder / "comments.json"
+        reading = None
+        if video.url and not video.options.get("comments_read") and not comments_file.exists():
+            log("Reading comments in the background")
+            reading = _BACKGROUND.submit(fetch_comments, video.url, video.duration)
 
         source = folder / "source.mp4"
         if not source.exists():
             if video.url:
                 video = _stage(video, "Downloading video", log)
-                download_source(video.url, source, log)
+                info = fetch_info(video.url)  # checked here too: a resumed job skips the details step above
+                if info.get("is_live"):
+                    video = _stage(video, "Capturing the live stream", log)
+                    download_live_window(info, source, video.options.get("live_s", LIVE_WINDOW_S), log)
+                    video = video.model_copy(update={"options": {**video.options, "live": True, "comments_read": True,
+                                                                  "caption_code": None}})
+                    library.save_video(video)
+                else:
+                    download_source(video.url, source, log)
             else:
                 video = _stage(video, "Preparing the uploaded video", log)
                 upload = folder / video.options["upload_file"]
@@ -142,6 +226,10 @@ def analyse(video_id: str, log: LogFn) -> Video:
             video = video.model_copy(update={"words": words})
             library.save_video(video)
 
+        if reading is not None or (comments_file.exists() and not video.options.get("comments_read")):
+            video = _stage(video, "Matching comments to the transcript", log)
+            video = _match_comments(video, reading, comments_file, log)
+
         if not video.options.get("loudness_measured"):
             video = _stage(video, "Measuring loudness", log)
             loud = loud_seconds(measure_loudness(source))
@@ -149,18 +237,33 @@ def analyse(video_id: str, log: LogFn) -> Video:
             library.save_video(video)
             log(f"{len(loud)} loud seconds")
 
+        if not video.options.get("content_checked"):
+            video = _stage(video, "Working out what kind of video this is", log)
+            try:
+                content = classify(video, ask_ai)
+            except (AIUnavailable, AIError) as error:
+                log(f"Could not tell the kind of video ({str(error)[:120]}); framing by faces alone")
+                content = ""
+            video = video.model_copy(update={"content": content, "options": {**video.options, "content_checked": True}})
+            library.save_video(video)
+            if content:
+                log(f"This looks like a {content} video")
+
         if not library.load_clips(video_id):
             video = _stage(video, "Finding moments with AI", log)
             o = video.options
             try:
                 clips = find_clips(video, ask_ai, min_s=o.get("min_s", 20), max_s=o.get("max_s", 60),
-                                   max_clips=o.get("max_clips", 30), direction=o.get("direction", ""))
+                                   max_clips=o.get("max_clips", 30), direction=o.get("direction", ""),
+                                   trends=current_note(), taste=taste_note(video.id))
             except AIUnavailable as error:
                 log(f"The AI is unavailable ({str(error)[:120]}); picking clips by loudness instead")
                 clips = loudness_clips(video, o.get("min_s", 20), o.get("max_s", 60), o.get("max_clips", 30))
                 if not clips:
                     raise RuntimeError("The AI is unavailable and this video has no loud moments to fall back on. "
                                        "Try again later.") from error
+            look = saved_look()
+            clips = decorate(video, [tighten(video, with_look(clip, look)) for clip in clips], ask_ai, log)
             for clip in clips:
                 library.save_clip(video_id, clip)
             log(f"Found {len(clips)} moments")

@@ -1,5 +1,7 @@
 """Housekeeping: resume unfinished work after a restart, free disk after 14 days, export a whole video as a zip."""
 
+import hashlib
+import json
 import threading
 import time
 import zipfile
@@ -78,20 +80,35 @@ def start_cleanup_timer() -> None:
     threading.Thread(target=loop, daemon=True, name="cleanup").start()
 
 
-def export_all(video_id: str, handle: str, log: LogFn) -> Path:
-    """Render every clip that is not discarded (reusing exports newer than their edits) and zip them."""
+def render_export(plan, source: Path, out: Path, log: LogFn, offset: int, fps: float | None, force: bool = False) -> bool:
+    """Render `plan` to `out` unless the last render there used the same plan, source and frame rate.
+    The key sits next to the MP4, so saving a clip or Settings without changing the result reuses it.
+    Returns True if it rendered."""
+    # ponytail: a logo or music file swapped under the same name is not seen; delete export.mp4 to force it.
+    key = hashlib.sha1(json.dumps([plan.model_dump(mode="json"), str(source), offset, fps], sort_keys=True).encode()).hexdigest()
+    stamp = out.with_name(out.stem + ".key")
+    if not force and out.exists() and stamp.exists() and stamp.read_text() == key:
+        return False
+    render(plan, source, out, log, frame_offset=offset, out_fps=fps)
+    stamp.write_text(key)
+    return True
+
+
+def export_all(video_id: str, options: dict, log: LogFn) -> Path:
+    """Render every clip that is not discarded (reusing exports newer than both their edits and Settings) and zip
+    them. `options`: handle, quality (2 = 4K) and fps (None = the source's), as server.export_options gives."""
     video = library.load_video(video_id)
-    clips = [c for c in library.load_clips(video_id) if c.status != "discarded"]
+    every = library.load_clips(video_id)
+    clips = [c for c in every if c.status == "kept"] or [c for c in every if c.status != "discarded"]  # kept ones, once reviewed
     if not clips:
         raise RuntimeError("Every clip of this video is discarded, so there is nothing to export.")
     files = []
     for number, clip in enumerate(clips, 1):
-        folder = library.clip_dir(video_id, clip.index)
-        out = folder / "export.mp4"
-        if not out.exists() or out.stat().st_mtime < (folder / "clip.json").stat().st_mtime:
-            log(f"Rendering clip {number}/{len(clips)}")
-            source, offset = library.media_for(video_id, clip)
-            render(build_plan(video, clip, handle=handle), source, out, log=lambda m: None, frame_offset=offset)
+        out = library.clip_dir(video_id, clip.index) / "export.mp4"
+        source, offset = library.media_for(video_id, clip)
+        plan = build_plan(video, clip, handle=options["handle"], quality=options["quality"], brand=options.get("brand", ""))
+        log(f"Rendering clip {number}/{len(clips)}")
+        render_export(plan, source, out, lambda m: None, offset=offset, fps=options["fps"])
         files.append((clip, out))
     zip_path = library.video_dir(video_id) / "clips.zip"
     partial = zip_path.with_suffix(".partial")

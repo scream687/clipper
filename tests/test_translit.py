@@ -45,3 +45,20 @@ def test_sentences_are_converted_in_context_and_word_counts_are_kept():
     assert out[0] == ["I", "think", "aap"]
     assert out[1] == ["already", "english"]
     assert len(out[2]) == 2 and not any(translit.needs_roman(w) for w in out[2])  # wrong count -> word-by-word fallback
+
+
+def test_rule_based_spelling_is_not_cached_so_a_later_ai_run_can_fix_it():
+    def down(prompt, schema, system):
+        raise translit.AIUnavailable("limit reached")
+    translit.romanize(["नमस्ते"], down)
+    good = lambda prompt, schema, system: {"items": [{"i": 0, "r": "namaste"}]}
+    assert translit.romanize(["नमस्ते"], good) == {"नमस्ते": "namaste"}
+
+
+def test_a_dead_ai_is_asked_only_once_per_run():
+    calls = []
+    def down(prompt, schema, system):
+        calls.append(1)
+        raise translit.AIUnavailable("limit reached")
+    translit.romanize([f"शब्द{i}" for i in range(translit.BATCH * 3)], down)
+    assert len(calls) == 1

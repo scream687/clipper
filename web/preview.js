@@ -2,7 +2,6 @@
 // Two <video> elements take turns so jump cuts play without a seek stall: while one
 // plays a segment, the other is already parked at the start of the next.
 
-const FONT_FAMILY = { "Arial Black": '"Clip Arial Black"', "Arial Bold": '"Clip Arial Bold"' };
 
 // Mirrors app/plan.py interpolate(): glide between keys, hold before a jump key.
 export function interpolate(keys, t) {
@@ -27,10 +26,11 @@ function seekTo(video, time) {
 }
 
 export class Preview {
-  constructor({ stage, videos, fill, overlay, onTime, onEnd }) {
-    Object.assign(this, { stage, videos, fill, overlay, onTime, onEnd });
+  constructor({ stage, videos, fill, split, overlay, onTime, onEnd, maxVh = 72 }) {
+    Object.assign(this, { stage, videos, fill, split, overlay, onTime, onEnd, maxVh });
+    this.splitCtx = split.getContext("2d"); this.splitOverride = {};
     this.plan = null; this.segs = []; this.seg = 0; this.active = 0; this.playing = false;
-    this.cropOverride = null; this.group = null; this.audio = null; this.beepOsc = null;
+    this.cropOverride = null; this.audio = null; this.beepOsc = null;
     this.fillCtx = fill.getContext("2d");
     new ResizeObserver(() => this.layout()).observe(stage);
     videos.forEach((video, which) => this.watch(video, which));
@@ -46,6 +46,7 @@ export class Preview {
   setPlan(plan) {
     const keepTime = this.time ?? 0;
     this.plan = plan;
+    this.splitOverride = {};  // a dragged split position is in the new plan now
     let offset = 0;
     this.segs = plan.segments.map((s) => {
       const seg = { start: s.start_frame / plan.fps - (this.offset || 0), end: s.end_frame / plan.fps - (this.offset || 0), offset };
@@ -54,7 +55,7 @@ export class Preview {
     });
     this.duration = plan.duration;
     this.stage.style.aspectRatio = `${plan.width} / ${plan.height}`;
-    this.stage.style.width = `min(100%, calc(72vh * ${plan.width / plan.height}))`;
+    this.stage.style.width = `min(100%, calc(${this.maxVh}vh * ${plan.width / plan.height}))`;
     this.buildStatic();
     this.layout();
     this.seek(Math.min(keepTime, Math.max(0, plan.duration - 0.05)));
@@ -97,6 +98,7 @@ export class Preview {
 
   pause() {
     this.playing = false;
+    this.music?.pause();
     this.videos.forEach((v) => v.pause());
     this.setBeep(false);
   }
@@ -141,8 +143,11 @@ export class Preview {
     this.overlay.style.width = `${p.width}px`;
     this.overlay.style.height = `${p.height}px`;
     this.overlay.style.transform = `scale(${this.scale})`;
-    const fit = Math.min(boxW / p.source_width, boxH / p.source_height);
-    this.fitBox = { w: p.source_width * fit, h: p.source_height * fit, x: (boxW - p.source_width * fit) / 2, y: (boxH - p.source_height * fit) / 2, crop: false };
+    // Whole frame: the card rectangle from the plan (app/plan.py _canvas), with its rounded corners.
+    const c = p.canvas, s = this.scale;
+    this.fitBox = { w: c.card_w * s, h: c.card_h * s, x: c.card_x * s, y: c.card_y * s, crop: false, radius: c.radius * s };
+    this.stage.style.background = c.background === "color" ? c.color
+      : c.background === "gradient" ? `linear-gradient(to bottom, ${c.color}, ${c.color2})` : "";
     const k = boxW / p.crop_w;
     this.cropBox = { w: p.source_width * k, h: p.source_height * k, x: 0, y: -((p.source_height - p.crop_h) / 2) * k, crop: true, k };
     this.videoBox = null;
@@ -164,20 +169,67 @@ export class Preview {
     return this.cropOverride ?? interpolate(this.plan.crop_keys, tOut);
   }
 
+  // Split: the same frame drawn twice, facecam crop on top, video crop below (mirrors app/render.py _split_graph).
+  splitAt(half) {
+    return this.splitOverride[half] ?? (half === "top" ? this.plan.split.top : this.plan.split.bottom_cx);
+  }
+
+  setSplitOverride(half, value) {
+    this.splitOverride = value == null ? {} : { [half]: value };
+    this.draw(this.time ?? 0, this.videos[this.active]);
+  }
+
+  drawSplit(video) {
+    const p = this.plan, sp = p.split, c = this.split, dpr = window.devicePixelRatio || 1;
+    const w = Math.round(this.stage.clientWidth * dpr), h = Math.round(this.stage.clientHeight * dpr);
+    if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+    if (video.readyState < 2) return;
+    const k = video.videoWidth / p.source_width, topH = Math.round(h * sp.top_h / p.height);
+    const [x, y, cw, ch] = this.splitAt("top");
+    this.splitCtx.drawImage(video, x * k, y * k, cw * k, ch * k, 0, 0, w, topH);
+    const [lo, hi] = sp.bottom_x, left = Math.min(Math.max(Math.round(this.splitAt("bottom") * p.source_width - sp.crop_w / 2), lo), hi);
+    const t = this.time ?? 0, z = (p.zooms || []).some(([a, b]) => t >= a && t < b) ? p.zoom : 1;  // punch-in on the lower pane
+    const zw = sp.crop_w / z, zh = sp.crop_h / z;
+    this.splitCtx.drawImage(video, (left + (sp.crop_w - zw) / 2) * k, ((p.source_height - sp.crop_h) / 2 + (sp.crop_h - zh) / 2) * k,
+                            zw * k, zh * k, 0, topH, w, h - topH);
+  }
+
   draw(tOut, video) {
     if (!this.plan || !this.cropBox) return;
+    const isSplit = this.plan.framing === "split";
+    this.split.hidden = !isSplit;
+    if (isSplit) {
+      this.fill.hidden = true;
+      this.drawSplit(video);
+      this.drawOverlay(tOut);
+      this.setBeep(this.playing && this.plan.beeps.some(([a, b]) => tOut >= a && tOut < b));
+      this.onTime?.(tOut);
+      return;
+    }
     const p = this.plan, box = this.fitAt(tOut) ? this.fitBox : this.cropBox;
     if (box !== this.videoBox) {
       this.videoBox = box;
-      this.videos.forEach((v) => { v.style.width = `${box.w}px`; v.style.height = `${box.h}px`; });
-      this.fill.hidden = box.crop;
+      this.videos.forEach((v) => {
+        Object.assign(v.style, { width: `${box.w}px`, height: `${box.h}px`, borderRadius: box.crop ? "" : `${box.radius}px` });
+      });
+      this.fill.hidden = box.crop || p.canvas.background !== "blur";
     }
-    let x = box.x;
+    let x = box.x, zoom = "";
+    const zoomed = (p.zooms || []).some(([a, b]) => tOut >= a && tOut < b);
+    if (!box.crop && zoomed && p.framing === "fill") {  // the whole card punches in (app/compose.py #fit)
+      const ax = this.stage.clientWidth / 2, ay = this.stage.clientHeight * p.zoom_anchor_y;
+      zoom = `translate(${ax}px, ${ay}px) scale(${p.zoom}) translate(${-ax}px, ${-ay}px) `;
+    }
     if (box.crop) {
       const left = Math.min(Math.max(this.cropAt(tOut) * p.source_width - p.crop_w / 2, 0), p.source_width - p.crop_w);
       x = -left * box.k;
+      // Punch-in: scale about (centre, zoom_anchor_y), the point app/render.py's narrowed crop keeps still.
+      if ((p.zooms || []).some(([a, b]) => tOut >= a && tOut < b)) {
+        const ax = this.stage.clientWidth / 2, ay = this.stage.clientHeight * p.zoom_anchor_y;
+        zoom = `translate(${ax}px, ${ay}px) scale(${p.zoom}) translate(${-ax}px, ${-ay}px) `;
+      }
     }
-    const transform = `translate(${x}px, ${box.y}px)`;
+    const transform = `${zoom}translate(${x}px, ${box.y}px)`;
     this.videos.forEach((v) => { v.style.transform = transform; });
     if (!this.fill.hidden && video.readyState >= 2) {
       const c = this.fill, ctx = this.fillCtx, ratio = Math.max(c.width / video.videoWidth, c.height / video.videoHeight);
@@ -189,90 +241,96 @@ export class Preview {
     this.onTime?.(tOut);
   }
 
+  // The text layer is web/overlay/ in an iframe: the very page HyperFrames renders for the export.
+  // Only the post header and the logo (ffmpeg overlays them as pictures) are drawn here.
+  ensureFrame() {
+    if (this.frame) return;
+    this.frame = document.createElement("iframe");
+    this.frame.className = "ov-frame";
+    this.frame.setAttribute("aria-hidden", "true");
+    this.frame.tabIndex = -1;
+    this.frameReady = new Promise((resolve) => this.frame.addEventListener("load", resolve, { once: true }));
+    this.frame.src = "/overlay/stage.html";
+    this.overlay.append(this.frame);
+  }
+
   buildStatic() {
-    const p = this.plan, s = p.style;
-    this.overlay.replaceChildren();
-    this.group = null;
-    this.captionHost = document.createElement("div");
-    this.overlay.append(this.captionHost);
-    this.hookEl = null;
-    this.emojiEl = document.createElement("div");
-    this.emojiEl.className = "ov-emoji";
-    Object.assign(this.emojiEl.style, { top: `${p.emoji_y}px`, fontSize: `${Math.round(p.emoji_px * 1.0)}px` });
-    this.overlay.append(this.emojiEl);
-    if (p.hook) {
-      const hook = document.createElement("div");
-      hook.className = "ov-hook";
-      Object.assign(hook.style, { top: `${p.height * s.hook.y}px`, font: `${s.hook.size}px/${s.hook.line_px}px ${FONT_FAMILY[s.hook.font]}` });
-      const pad = Math.round(s.hook.size * 0.25);
-      p.hook.lines.forEach((line) => {
-        const row = document.createElement("div"), span = document.createElement("span");
-        span.textContent = line; span.style.padding = `0 ${pad}px`;
-        row.append(span); hook.append(row);
-      });
-      this.overlay.append(hook);
-      this.hookEl = hook;
+    const p = this.plan;
+    this.ensureFrame();
+    [...this.overlay.children].forEach((child) => { if (child !== this.frame) child.remove(); });
+    Object.assign(this.frame.style, { width: `${p.width}px`, height: `${p.height}px` });
+    const plan = p;
+    this.layerReady = false;
+    this.frameReady.then(() => {
+      if (this.plan !== plan) return;  // a newer plan is on its way
+      this.frame.contentWindow.clipOverlay.build(plan);
+      this.layerReady = true;
+      this.frame.contentWindow.clipOverlay.seek(this.time ?? 0);
+    });
+    if (p.tweet && this.tweetUrl) {  // the same PNG the export overlays (app/template.py)
+      const header = document.createElement("img");
+      header.className = "ov-logo"; header.alt = "";
+      header.src = `${this.tweetUrl}?v=${encodeURIComponent(JSON.stringify([p.tweet.name, p.tweet.handle, p.tweet.lines, p.tweet.theme, this.logoVersion ||= Date.now()]))}`;
+      Object.assign(header.style, { left: "0px", top: `${p.tweet.y}px`, width: `${p.width}px`, height: `${p.tweet.height}px` });
+      this.overlay.append(header);
     }
-    const small = (text, style, cls, place) => {
-      if (!text) return;
-      const node = document.createElement("div");
-      node.className = `ov-small ${cls}`;
-      node.textContent = text;
-      Object.assign(node.style, { font: `700 ${style.size}px ${FONT_FAMILY["Arial Bold"]}`, ...place });
-      this.overlay.append(node);
-    };
-    small(p.handle, s.handle, "ov-handle", { left: "50%", top: `${p.height * s.handle.y}px`, transform: "translate(-50%, -50%)" });
-    small(p.credit, s.credit, "ov-credit", { left: `${Math.round(p.width * 0.04)}px`, top: `${p.height * s.credit.y}px`, transform: "translateY(-100%)" });
+    // B-roll and cards are rendered by Remotion at export; the preview marks where they go.
+    this.insertEl = document.createElement("div");
+    this.insertEl.className = "ov-insert"; this.insertEl.hidden = true;
+    this.overlay.prepend(this.insertEl);
+    if (p.logo) {
+      const img = document.createElement("img");
+      img.className = "ov-logo"; img.alt = ""; img.src = `/api/logo.png?v=${this.logoVersion ||= Date.now()}`;
+      Object.assign(img.style, { left: `${p.logo.x}px`, top: `${p.logo.y}px`, width: `${p.logo.w}px`, height: `${p.logo.h}px` });
+      this.overlay.append(img);
+    }
   }
 
   drawOverlay(t) {
-    const p = this.plan, s = p.style;
-    if (this.hookEl) this.hookEl.hidden = !(t >= p.hook.start && t < p.hook.end);
-    const emoji = (p.emojis || []).find((e) => t >= e.start && t < e.end);
-    this.emojiEl.textContent = emoji ? emoji.emoji : "";
-    const group = p.captions.find((g) => t >= g.start && t < g.end) || null;
-    if (group !== this.group) {
-      this.group = group;
-      this.captionHost.replaceChildren();
-      if (!group) return;
-      const words = this.wordMap || (this.wordMap = new Map());
-      words.clear(); p.words.forEach((w) => words.set(w.word_id, w));
-      const block = document.createElement("div");
-      block.className = `ov-block ov-${p.look}${s.box ? "" : " ov-stroke"}`;
-      Object.assign(block.style, {
-        top: `${p.height * p.caption_y}px`, font: `${s.size}px/${s.line_px}px ${FONT_FAMILY[s.font]}`,
-        textTransform: s.uppercase ? "uppercase" : "none",
-      });
-      block.style.setProperty("--ov-color", s.color);
-      block.style.setProperty("--ov-active", s.active);
-      block.style.setProperty("--ov-stroke", `${s.outline * 2}px`);
-      if (p.look === "pop") block.classList.add("ov-pop");
-      const pad = Math.round(s.size * 0.22);
-      group.lines.forEach((line) => {
-        const row = document.createElement("div");
-        row.className = "ov-line";
-        const run = document.createElement("span");
-        run.className = "ov-run";
-        if (s.box) run.style.padding = `0 ${pad}px`;
-        line.word_ids.forEach((id, i) => {
-          const span = document.createElement("span");
-          span.className = "ov-word";
-          span.dataset.start = words.get(id).start;
-          span.textContent = (i ? " " : "") + words.get(id).text;
-          run.append(span);
-        });
-        row.append(run); block.append(row);
-      });
-      this.captionHost.append(block);
+    if (this.layerReady) this.frame.contentWindow.clipOverlay.seek(t);
+    const insert = (this.plan.inserts || []).find((i) => t >= i.start && t < i.end);
+    if (this.insertEl) {
+      this.insertEl.hidden = !insert;
+      if (insert) this.insertEl.textContent = insert.kind === "card" ? insert.text : `B-roll: ${insert.query || insert.text}`;
     }
-    if (!group) return;
-    const spans = [...this.captionHost.querySelectorAll(".ov-word")];
-    if (p.look === "highlight") {
-      let current = 0;
-      spans.forEach((sp, i) => { if (Number(sp.dataset.start) <= t) current = i; });
-      spans.forEach((sp, i) => sp.classList.toggle("is-active", i === current));
-    } else if (p.look === "karaoke") {
-      spans.forEach((sp) => sp.classList.toggle("is-active", Number(sp.dataset.start) <= t));
+    this.syncMusic(t);
+    this.syncSfx(t);
+  }
+
+  // ----- music bed (mirrors app/render.py _music_chain) -----
+  musicGain(t) {
+    const m = this.plan.music, d = this.plan.duration, fade = Math.min(0.5, d / 4), from = d - m.riser_s;
+    let gain = m.riser_s > 0 && t >= from ? m.volume + (m.peak - m.volume) * (t - from) / m.riser_s : m.volume;
+    gain *= Math.min(1, t / fade, (d - t) / fade);
+    return Math.min(1, Math.max(0, gain));
+  }
+
+  syncMusic(t) {
+    const m = this.plan.music;
+    if (!m) { this.music?.pause(); return; }
+    const src = `/api/music/${encodeURIComponent(m.file)}`;
+    if (!this.music || this.music.dataset.src !== src) {
+      this.music?.pause();
+      this.music = new Audio(src); this.music.loop = true; this.music.dataset.src = src;
+    }
+    if (!this.playing) { this.music.pause(); return; }
+    this.music.volume = this.musicGain(t);
+    const length = this.music.duration;
+    if (length && Math.abs(this.music.currentTime - t % length) > 0.25) this.music.currentTime = t % length;
+    if (this.music.paused) this.music.play().catch(() => {});
+  }
+
+  // ----- sound effects (mirrors app/render.py _sfx_chain) -----
+  syncSfx(t) {
+    const last = this.sfxTime ?? t;
+    this.sfxTime = t;
+    if (!this.playing || t < last || t - last > 0.5) return;  // a seek or a pause: nothing fires
+    for (const e of this.plan.sfx || []) {
+      if (e.t > last && e.t <= t) {
+        const sound = new Audio(`/api/sfx/${encodeURIComponent(e.file)}`);
+        sound.volume = Math.min(1, e.gain);
+        sound.play().catch(() => {});
+      }
     }
   }
 

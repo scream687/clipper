@@ -22,15 +22,71 @@
         <input name="handle" type="text" maxlength="60" autocomplete="off" spellcheck="false" placeholder="@yourname">
       </label>
       <label class="field">
+        <span>Display name <small>on the X post template</small></span>
+        <input name="brand" type="text" maxlength="50" autocomplete="off" placeholder="Your name or brand">
+      </label>
+      <label class="field">
         <span>Channels to watch <small>one @handle per line</small></span>
         <textarea name="channels" rows="3" autocomplete="off" spellcheck="false" placeholder="@rajshamani"></textarea>
+      </label>
+      <label class="field">
+        <span>Upcoming events <small>one per line: date, then names people search, split by /</small></span>
+        <textarea name="upcoming" rows="2" autocomplete="off" spellcheck="false" placeholder="2026-11-19 GTA 6 / GTA VI / Grand Theft Auto"></textarea>
+      </label>
+      <label class="field">
+        <span>Creators for Trending <small>one @handle per line</small></span>
+        <textarea name="trend_creators" rows="4" autocomplete="off" spellcheck="false" placeholder="@CarryMinati"></textarea>
+      </label>
+      <label class="field">
+        <span>Export quality</span>
+        <select name="export_quality"><option value="1080">1080p (Full HD)</option><option value="4k">4K (sharper on YouTube; bigger files)</option></select>
+      </label>
+      <label class="field">
+        <span>Export frame rate</span>
+        <select name="export_fps"><option value="source">Same as the video</option><option value="30">30 fps</option><option value="60">60 fps</option></select>
       </label>
       <label class="field">
         <span>OpusClip API key <small>optional, for “Also ask OpusClip”</small></span>
         <input name="opusclip_key" type="password" maxlength="500" autocomplete="off" spellcheck="false">
       </label>
+      <label class="field">
+        <span>Pexels API key <small id="pexels-state">free at pexels.com/api; B-roll footage. Without it, B-roll moments become cards</small></span>
+        <input name="pexels_key" type="password" maxlength="200" autocomplete="off" spellcheck="false">
+      </label>
       <button type="submit" class="solid-button">Save</button>
       <p class="hint" id="settings-status" role="status"></p>
+    </form>
+
+    <form id="brand-form" class="settings-form brand-form">
+      <h3 class="ai-heading">Brand <small>logo and music, shared by every clip</small></h3>
+      <div class="field">
+        <span>Logo <small>PNG with a transparent background works best</small></span>
+        <div class="brand-row">
+          <img id="logo-preview" alt="Your logo" hidden>
+          <input type="file" id="logo-file" accept="image/png,image/jpeg,image/webp">
+          <button type="button" class="text-button" id="logo-remove" hidden>Remove logo</button>
+        </div>
+      </div>
+      <div class="field">
+        <span>Music library <small>MP3, M4A, AAC or WAV; use tracks you have the rights to</small></span>
+        <input type="file" id="music-file" accept="audio/mpeg,audio/mp4,audio/aac,audio/wav,.mp3,.m4a,.aac,.wav">
+        <ul class="music-list" id="music-list"></ul>
+      </div>
+      <div class="field">
+        <span>Sound effects <small>paste a myinstants.com link, or upload; whoosh, pop, impact and riser are built in</small></span>
+        <div class="brand-row sfx-add">
+          <input type="url" id="sfx-url" placeholder="https://www.myinstants.com/en/instant/vine-boom-sound-70972/" autocomplete="off" spellcheck="false">
+          <select id="sfx-role" aria-label="Used for">
+            <option value="meme">Punchline meme</option><option value="whoosh">Whoosh (punch-ins)</option>
+            <option value="pop">Pop (emojis, text)</option><option value="impact">Impact</option><option value="riser">Riser</option>
+          </select>
+          <button type="button" class="quiet-button" id="sfx-import">Add</button>
+          <input type="file" id="sfx-file" accept="audio/mpeg,audio/mp4,audio/wav,.mp3,.m4a,.wav" aria-label="Upload a sound">
+        </div>
+        <ul class="music-list" id="sfx-list"></ul>
+        <small class="hint">myinstants sounds are often clipped from films and memes and can get a Short claimed. Switch on “Safe sounds only” in a clip to skip them.</small>
+      </div>
+      <p class="hint" id="brand-status" role="status"></p>
     </form>
 
     <form id="ai-form" class="settings-form ai-form">
@@ -64,13 +120,16 @@
   <main>
     <!-- Library -->
     <section class="view" id="view-library" aria-labelledby="library-heading" hidden>
-      <h1 id="library-heading">Cut the moments<br>viewers replay.</h1>
+      <h1 id="library-heading">New clips</h1>
+      <p class="lede">Paste a link. Clips come back framed, captioned, paced and scored; you keep or drop them.</p>
       <form id="add-form" novalidate>
         <div class="link-bar">
           <label class="visually-hidden" for="add-url">YouTube link</label>
           <input id="add-url" name="url" type="url" required inputmode="url" autocomplete="off" spellcheck="false" placeholder="Paste a YouTube link">
           <button type="submit" class="solid-button" id="add-button">Find clips</button>
         </div>
+        <details class="add-more">
+        <summary>Upload a file, shape, length and direction</summary>
         <div class="upload-row">
           <label class="field upload-field"><span>Or upload a video file</span>
             <input id="add-file" name="file" type="file" accept="video/mp4,video/quicktime,video/x-m4v,video/x-matroska,video/webm,.mp4,.mov,.m4v,.mkv,.webm"></label>
@@ -81,24 +140,33 @@
           <fieldset class="segmented">
             <legend>Shape</legend>
             <label><input type="radio" name="shape" value="9:16" checked><span>9:16</span></label>
+            <label><input type="radio" name="shape" value="4:5"><span>4:5</span></label>
             <label><input type="radio" name="shape" value="1:1"><span>1:1</span></label>
             <label><input type="radio" name="shape" value="16:9"><span>16:9</span></label>
           </fieldset>
           <label class="field"><span>Up to <small>clips</small></span><input name="max_clips" type="number" min="1" max="50" value="30" required></label>
           <label class="field"><span>Shortest <small>s</small></span><input name="min_s" type="number" min="5" max="300" value="20" required></label>
           <label class="field"><span>Longest <small>s</small></span><input name="max_s" type="number" min="10" max="600" value="60" required></label>
+          <label class="field"><span>Live streams <small>last minutes</small></span><input name="live_minutes" type="number" min="5" max="240" value="30" required></label>
           <label class="field field-wide"><span>Direction <small>optional</small></span>
             <textarea name="direction" rows="2" maxlength="1000" placeholder="e.g. only 10:00 - 25:00, focus on money advice, skip the sponsor read"></textarea></label>
         </div>
+        </details>
       </form>
+      <h2 class="section-title">Your videos</h2>
+      <p class="hint" id="library-empty" hidden>No videos yet. Paste a link above to start.</p>
+      <ol class="video-list" id="video-list"></ol>
+      <section id="trending" aria-labelledby="trending-heading" hidden>
+        <h2 class="section-title" id="trending-heading">Trending in India</h2>
+        <ul class="trend-chips" id="trend-chips" aria-label="Upcoming events and top searches"></ul>
+        <p class="hint" id="trending-state" role="status"></p>
+        <ol class="video-list" id="trending-list"></ol>
+      </section>
       <section id="watch" aria-labelledby="watch-heading" hidden>
         <h2 class="section-title" id="watch-heading">New from your channels</h2>
         <p class="hint" id="watch-state" role="status"></p>
         <ol class="video-list" id="watch-list"></ol>
       </section>
-      <h2 class="section-title">Library</h2>
-      <p class="hint" id="library-empty" hidden>No videos yet. Paste a link above to start.</p>
-      <ol class="video-list" id="video-list"></ol>
     </section>
 
     <!-- One video -->
@@ -113,27 +181,61 @@
         <pre class="log" id="video-log" tabindex="0" aria-label="Progress log"></pre>
         <button type="button" class="quiet-button" id="video-retry" hidden>Try again</button>
       </div>
-      <figure class="graph" id="video-graph-wrap" hidden>
-        <svg id="video-graph" viewBox="0 0 1000 200" preserveAspectRatio="none" role="img" aria-labelledby="video-graph-caption"></svg>
-        <div class="graph-axis" id="video-graph-axis" aria-hidden="true"></div>
-        <figcaption id="video-graph-caption" class="hint"></figcaption>
-      </figure>
-      <div class="zip-bar" id="zip-bar" hidden>
-        <button type="button" class="solid-button" id="zip-export">Export all as zip</button>
-        <a class="quiet-button" id="zip-download" hidden>Download zip</a>
-        <p class="hint" id="zip-state" role="status"></p>
-        <button type="button" class="quiet-button" id="opus-run" hidden>Also ask OpusClip</button>
-        <p class="hint" id="opus-state" role="status"></p>
+      <div class="review" id="review" hidden>
+        <aside class="review-player" aria-label="Clip review">
+          <div class="stage review-stage" id="r-stage" aria-label="Clip preview">
+            <canvas class="stage-fill" id="r-fill" width="180" height="320" aria-hidden="true"></canvas>
+            <video class="stage-video" id="r-a" muted playsinline preload="auto"></video>
+            <video class="stage-video" id="r-b" muted playsinline preload="auto" hidden></video>
+            <canvas class="stage-split" id="r-split" aria-hidden="true" hidden></canvas>
+            <div class="overlay" id="r-overlay" aria-hidden="true"></div>
+          </div>
+          <div class="transport">
+            <button type="button" class="solid-button play-button" id="r-play">Play</button>
+            <input type="range" id="r-scrub" min="0" max="1" step="0.01" value="0" aria-label="Position in clip">
+            <p class="timecode" id="r-time">0:00 / 0:00</p>
+          </div>
+          <div class="review-card">
+            <p class="review-count" id="r-count"></p>
+            <div class="review-actions">
+              <button type="button" class="quiet-button drop-button" id="r-drop">Drop <kbd>N</kbd></button>
+              <button type="button" class="solid-button keep-button" id="r-keep">Keep <kbd>Y</kbd></button>
+              <a class="quiet-button" id="r-edit">Edit <kbd>E</kbd></a>
+            </div>
+            <p class="hint review-keys"><kbd>J</kbd> <kbd>K</kbd> next and previous · <kbd>Space</kbd> plays</p>
+          </div>
+        </aside>
+
+        <div class="review-list">
+          <div class="zip-bar" id="zip-bar" hidden>
+            <button type="button" class="solid-button" id="zip-export">Export all as zip</button>
+            <a class="quiet-button" id="zip-download" hidden>Download zip</a>
+            <p class="hint" id="zip-state" role="status"></p>
+          </div>
+          <p class="hint review-tally" id="review-tally" role="status"></p>
+          <ol class="clip-list" id="clip-list" aria-label="Clips"></ol>
+          <form class="search-bar" id="search-form" hidden>
+            <label class="visually-hidden" for="search-input">Search this video</label>
+            <input id="search-input" name="q" type="search" minlength="3" maxlength="500" autocomplete="off" placeholder="Find a word, or describe a moment for the AI">
+            <button type="submit" class="quiet-button" name="mode" value="words">Search words</button>
+            <button type="submit" class="solid-button" name="mode" value="ask">Ask AI</button>
+          </form>
+          <p class="hint" id="search-state" role="status"></p>
+          <ol class="search-hits" id="search-hits"></ol>
+          <div class="more-sources">
+            <button type="button" class="quiet-button" id="opus-run" hidden>Also ask OpusClip</button>
+            <p class="hint" id="opus-state" role="status"></p>
+          </div>
+          <details class="graph-details" id="video-graph-wrap" hidden>
+            <summary>Replay graph</summary>
+            <figure class="graph">
+              <svg id="video-graph" viewBox="0 0 1000 200" preserveAspectRatio="none" role="img" aria-labelledby="video-graph-caption"></svg>
+              <div class="graph-axis" id="video-graph-axis" aria-hidden="true"></div>
+              <figcaption id="video-graph-caption" class="hint"></figcaption>
+            </figure>
+          </details>
+        </div>
       </div>
-      <form class="search-bar" id="search-form" hidden>
-        <label class="visually-hidden" for="search-input">Search this video</label>
-        <input id="search-input" name="q" type="search" minlength="2" maxlength="500" autocomplete="off" placeholder="A word, or describe a moment: where he explains insulin">
-        <button type="submit" class="quiet-button" name="mode" value="words">Search words</button>
-        <button type="submit" class="solid-button" name="mode" value="ask">Ask AI</button>
-      </form>
-      <p class="hint" id="search-state" role="status"></p>
-      <ol class="search-hits" id="search-hits"></ol>
-      <ol class="clip-list" id="clip-list"></ol>
     </section>
 
     <!-- Editor -->
@@ -145,6 +247,7 @@
             <canvas class="stage-fill" id="stage-fill" width="180" height="320" aria-hidden="true"></canvas>
             <video class="stage-video" id="stage-a" muted playsinline preload="auto"></video>
             <video class="stage-video" id="stage-b" muted playsinline preload="auto" hidden></video>
+            <canvas class="stage-split" id="stage-split" aria-hidden="true" hidden></canvas>
             <div class="overlay" id="overlay" aria-hidden="true"></div>
           </div>
           <div class="transport">
@@ -152,7 +255,7 @@
             <input type="range" id="scrub" min="0" max="1" step="0.01" value="0" aria-label="Position in clip">
             <p class="timecode" id="time">0:00 / 0:00</p>
           </div>
-          <p class="hint">Drag the picture sideways to move the frame. <button type="button" class="text-button" id="reset-crop">Reset framing</button></p>
+          <p class="hint">Drag the picture to move the frame. In Split, scroll over the facecam to zoom it. <button type="button" class="text-button" id="reset-crop">Reset framing</button></p>
         </div>
 
         <div class="editor-side">
@@ -174,22 +277,63 @@
           </section>
 
           <section class="panel" aria-labelledby="look-heading">
-            <h2 id="look-heading">Look</h2>
+            <div class="panel-head">
+              <h2 id="look-heading">Look</h2>
+              <div class="look-actions">
+                <button type="button" class="quiet-button" id="look-save-default" title="New clips start with these captions, branding, music and canvas">Make this my default</button>
+                <button type="button" class="quiet-button" id="look-apply-all" title="Copy this look to every clip of this video">Apply to all clips</button>
+              </div>
+            </div>
+            <p class="hint" id="look-state" role="status"></p>
+            <div class="tabs" role="tablist" aria-label="Clip settings">
+              <button type="button" role="tab" class="tab" id="tab-style" aria-controls="pane-style" aria-selected="true">Style</button>
+              <button type="button" role="tab" class="tab" id="tab-extras" aria-controls="pane-extras" aria-selected="false" tabindex="-1">Sound &amp; extras</button>
+              <button type="button" role="tab" class="tab" id="tab-post" aria-controls="pane-post" aria-selected="false" tabindex="-1">Post text</button>
+            </div>
             <form id="look-form" class="look-form">
+              <div class="tab-pane" role="tabpanel" id="pane-style" aria-labelledby="tab-style">
               <fieldset class="segmented"><legend>Captions</legend>
                 <label><input type="radio" name="look" value="highlight"><span>Highlight</span></label>
                 <label><input type="radio" name="look" value="karaoke"><span>Karaoke</span></label>
                 <label><input type="radio" name="look" value="pop"><span>Pop</span></label>
+                <label><input type="radio" name="look" value="build"><span>Build up</span></label>
+                <label><input type="radio" name="look" value="line"><span>Full line</span></label>
                 <label><input type="radio" name="look" value="boxed"><span>Boxed</span></label>
               </fieldset>
               <fieldset class="segmented"><legend>Shape</legend>
                 <label><input type="radio" name="shape" value="9:16"><span>9:16</span></label>
+                <label><input type="radio" name="shape" value="4:5"><span>4:5</span></label>
                 <label><input type="radio" name="shape" value="1:1"><span>1:1</span></label>
                 <label><input type="radio" name="shape" value="16:9"><span>16:9</span></label>
               </fieldset>
-              <fieldset class="segmented"><legend>Framing</legend>
+              <fieldset class="segmented"><legend>Template</legend>
+                <label><input type="radio" name="template" value="none"><span>None</span></label>
+                <label><input type="radio" name="template" value="tweet"><span>X post</span></label>
+                <select name="tweet_theme" aria-label="X post theme"><option value="light">Light</option><option value="dark">Dark</option></select>
+              </fieldset>
+              <fieldset class="segmented" id="framing-controls"><legend>Framing</legend>
                 <label><input type="radio" name="framing" value="crop"><span>Follow face</span></label>
                 <label><input type="radio" name="framing" value="fill"><span>Whole frame</span></label>
+                <label><input type="radio" name="framing" value="split"><span>Split</span></label>
+              </fieldset>
+              <fieldset class="canvas-controls" id="canvas-controls"><legend>Canvas <small>behind the whole frame and wide shots</small></legend>
+                <div class="segmented">
+                  <label><input type="radio" name="background" value="blur"><span>Blur</span></label>
+                  <label><input type="radio" name="background" value="color"><span>Colour</span></label>
+                  <label><input type="radio" name="background" value="gradient"><span>Gradient</span></label>
+                </div>
+                <label class="swatch"><span>Colour</span><input type="color" name="bg_color"></label>
+                <label class="swatch"><span>Bottom</span><input type="color" name="bg_color2"></label>
+                <label class="slider"><span>Padding <output name="padding_out"></output></span><input type="range" name="padding" min="0" max="20" step="1"></label>
+                <label class="slider"><span>Corners <output name="radius_out"></output></span><input type="range" name="radius" min="0" max="80" step="4"></label>
+              </fieldset>
+              </div>
+              <div class="tab-pane" role="tabpanel" id="pane-extras" aria-labelledby="tab-extras" hidden>
+              <fieldset class="toggles"><legend>Pacing</legend>
+                <label><input type="checkbox" name="tighten"><span>Cut pauses and ums</span></label>
+                <label><input type="checkbox" name="punch_in"><span>Punch-in zooms</span></label>
+                <label><input type="checkbox" name="sfx"><span>Sound effects</span></label>
+                <label><input type="checkbox" name="sfx_safe_only"><span>Safe sounds only</span></label>
               </fieldset>
               <fieldset class="toggles"><legend>Show</legend>
                 <label><input type="checkbox" name="show_hook"><span>Hook</span></label>
@@ -197,16 +341,35 @@
                 <label><input type="checkbox" name="show_credit"><span>Credit</span></label>
                 <label><input type="checkbox" name="swear_filter"><span>Bleep swearing</span></label>
                 <label><input type="checkbox" name="show_emoji"><span>Emojis</span></label>
+                <label><input type="checkbox" name="show_follow"><span>Follow badge</span></label>
+                <label><input type="checkbox" name="show_logo"><span>Logo</span></label>
+                <label><input type="checkbox" name="show_progress"><span>Progress bar</span></label>
+                <label><input type="checkbox" name="show_broll"><span>B-roll and cards</span></label>
+              </fieldset>
+              <fieldset class="canvas-controls" id="logo-controls"><legend>Logo</legend>
+                <label class="field-inline"><span>Corner</span>
+                  <select name="logo_corner"><option value="tr">Top right</option><option value="tl">Top left</option><option value="br">Bottom right</option><option value="bl">Bottom left</option></select></label>
+                <label class="slider"><span>Size <output name="logo_size_out"></output></span><input type="range" name="logo_size" min="6" max="30" step="1"></label>
+              </fieldset>
+              <fieldset class="canvas-controls"><legend>Music <small>under the speech</small></legend>
+                <label class="field-inline"><span>Track</span><select name="music"><option value="">None</option></select></label>
+                <label class="slider"><span>Volume <output name="music_volume_out"></output></span><input type="range" name="music_volume" min="0" max="100" step="1"></label>
+                <label class="slider"><span>Rises to <output name="music_peak_out"></output></span><input type="range" name="music_peak" min="0" max="100" step="1"></label>
+                <label class="slider"><span>over the last <output name="riser_s_out"></output></span><input type="range" name="riser_s" min="0" max="15" step="1"></label>
               </fieldset>
               <div class="emoji-actions">
                 <button type="button" class="quiet-button" id="emoji-suggest">Suggest emojis</button>
                 <button type="button" class="text-button" id="emoji-clear">Clear emojis</button>
                 <span class="hint" id="emoji-list"></span>
               </div>
+              </div>
+              <div class="tab-pane" role="tabpanel" id="pane-post" aria-labelledby="tab-post" hidden>
               <label class="field"><span>Hook headline</span><input name="hook" type="text" maxlength="300" autocomplete="off"></label>
               <label class="field"><span>Title</span><input name="title" type="text" maxlength="300" autocomplete="off"></label>
               <label class="field"><span>Description</span><textarea name="description" rows="2" maxlength="1000"></textarea></label>
               <label class="field"><span>Hashtags</span><input name="hashtags" type="text" maxlength="300" autocomplete="off" placeholder="#topic #show"></label>
+              <label class="field"><span>Your rating <small>later picks learn from it</small></span><select name="rating"><option value="">Not rated</option><option value="10">10</option><option value="9">9</option><option value="8">8</option><option value="7">7</option><option value="6">6</option><option value="5">5</option><option value="4">4</option><option value="3">3</option><option value="2">2</option><option value="1">1</option></select></label>
+              </div>
             </form>
             <p class="hint" id="save-state" role="status"></p>
           </section>
@@ -244,11 +407,16 @@
 
   <template id="clip-row">
     <li class="clip-row">
-      <a class="clip-link">
-        <span class="timecode clip-time"></span>
-        <span class="clip-body"><span class="clip-title"></span><span class="clip-hook"></span></span>
-        <span class="clip-meta"><span class="replay"><span class="replay-bar"><span></span></span><span class="replay-label"></span></span><span class="hint clip-status"></span></span>
-      </a>
+      <button type="button" class="clip-pick">
+        <img class="clip-poster" alt="" width="54" height="96" loading="lazy">
+        <span class="clip-body">
+          <span class="clip-title"></span>
+          <span class="clip-hook"></span>
+          <span class="clip-meta"><span class="timecode clip-time"></span><span class="hint clip-status"></span>
+            <span class="replay"><span class="replay-bar"><span></span></span><span class="replay-label"></span></span></span>
+        </span>
+        <span class="clip-state"></span>
+      </button>
     </li>
   </template>
 </body>

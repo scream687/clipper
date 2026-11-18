@@ -76,7 +76,7 @@ def test_invalid_edits_are_refused(client, stored, edit):
 
 
 def test_handle_setting_reaches_the_plan(client, stored):
-    client.put("/api/settings", json={"handle": "@mine"})
+    client.put("/api/settings", json={"handle": " @  mine "})
     assert client.get(f"/api/videos/{stored.id}/clips/0").json()["plan"]["handle"] == "@mine"
 
 
@@ -139,3 +139,63 @@ def test_making_a_clip_from_words_appends_it(client, stored, monkeypatch):
 def test_making_a_clip_checks_its_range_and_the_video(client, stored):
     assert client.post(f"/api/videos/{stored.id}/clips", json={"first_word": 30, "last_word": 22}).status_code == 422
     assert client.post(f"/api/videos/{stored.id}/clips", json={"first_word": 22, "last_word": 30}).status_code == 409
+
+
+def test_music_and_logo_round_trip_and_clips_can_use_them(client, stored, tmp_path, monkeypatch):
+    import io, subprocess
+    from PIL import Image
+    from app import FFMPEG, assets
+    monkeypatch.setattr(assets, "MUSIC_DIR", tmp_path / "music")
+    monkeypatch.setattr(assets, "LOGO_FILE", tmp_path / "logo.png")
+    song = tmp_path / "s.mp3"
+    subprocess.run([FFMPEG, "-y", "-v", "error", "-f", "lavfi", "-i", "sine=duration=1", str(song)], check=True)
+    listed = client.post("/api/music", files={"file": ("Lo Fi.mp3", song.read_bytes())}).json()
+    assert [m["name"] for m in listed] == ["Lo-Fi.mp3"]
+    assert client.get("/api/music/Lo-Fi.mp3").status_code == 200
+    assert client.get("/api/music/..%2Fsettings.json").status_code == 404
+    png = io.BytesIO(); Image.new("RGB", (100, 50)).save(png, "PNG")
+    assert client.post("/api/logo", files={"file": ("l.png", png.getvalue())}).json()["has_logo"]
+    clip = client.get(f"/api/videos/{stored.id}/clips/0").json()["clip"]
+    body = client.put(f"/api/videos/{stored.id}/clips/0", json={**clip, "music": "Lo-Fi.mp3", "show_logo": True, "show_follow": True}).json()
+    assert body["plan"]["music"]["file"] == "Lo-Fi.mp3" and body["plan"]["logo"] and body["plan"]["follow"]
+    assert client.put(f"/api/videos/{stored.id}/clips/0", json={**clip, "music": "../x.mp3"}).status_code == 422
+
+
+def test_upload_with_bad_lengths_is_refused_before_storing(client):
+    response = client.post("/api/uploads", files={"file": ("talk.mp4", b"0" * 10, "video/mp4")},
+                           data={"language": "hi", "min_s": "60", "max_s": "30"})
+    assert response.status_code == 422 and "longest" in response.json()["detail"].lower()
+    assert library.list_videos() == []
+
+
+def test_delete_waits_for_an_export_of_one_of_its_clips(client, stored, monkeypatch):
+    from app import queue
+    monkeypatch.setattr(queue, "_jobs", {"j": {"subject": f"{stored.id}/0", "status": "running"}})
+    assert client.delete(f"/api/videos/{stored.id}").status_code == 409
+    monkeypatch.setattr(queue, "_jobs", {"j": {"subject": f"{stored.id}/0", "status": "done"}})
+    assert client.delete(f"/api/videos/{stored.id}").status_code == 200
+
+
+def test_clips_added_at_the_same_time_get_different_indices(client, stored, monkeypatch):
+    import threading
+    from app import pipeline
+    monkeypatch.setattr(pipeline, "frame_clip", lambda video, clip: None)
+    out = []
+    jobs = [threading.Thread(target=lambda: out.extend(pipeline.add_clips(stored, [Clip(index=0, first_word=1, last_word=5)], lambda m: None)))
+            for _ in range(8)]
+    [t.start() for t in jobs]; [t.join() for t in jobs]
+    assert sorted(out) == list(range(1, 9))
+
+
+def test_an_edit_keeps_the_ai_picks_it_sends_back(client, stored):
+    broll = [{"first_word": 8, "last_word": 10, "kind": "card", "text": "90%", "sub": "", "query": ""}]
+    edit = {"first_word": 2, "last_word": 20, "emphasis_words": [5], "meme_word": 7, "broll": broll}
+    body = client.put(f"/api/videos/{stored.id}/clips/0", json=edit).json()
+    assert body["clip"]["emphasis_words"] == [5] and body["clip"]["meme_word"] == 7 and body["clip"]["broll"] == broll
+
+
+def test_keep_and_drop_set_the_status_and_teach_a_rating(client, stored):
+    assert client.post(f"/api/videos/{stored.id}/clips/0/status", json={"status": "kept"}).json() == {"index": 0, "status": "kept", "rating": 8}
+    assert library.load_clip(stored.id, 0).status == "kept"
+    assert client.post(f"/api/videos/{stored.id}/clips/0/status", json={"status": "discarded"}).json()["rating"] == 8  # rated stays
+    assert client.post(f"/api/videos/{stored.id}/clips/0/status", json={"status": "maybe"}).status_code == 422

@@ -3,19 +3,44 @@
 import { api, clock, el, showAlert } from "./util.js";
 
 const POLL_MS = 2500;
-const DONE = new Set(["ready", "failed"]);
 let timer = null;
 
 export function wireLibrary() {
   el("add-form").addEventListener("submit", addVideo);
   el("video-list").addEventListener("click", deleteVideo);
   el("watch-list").addEventListener("click", addWatched);
+  el("trending-list").addEventListener("click", addWatched);
 }
 
 export async function showLibrary() {
   document.title = "Clipper";
   await refresh();
   loadChannels();
+  loadTrending();
+}
+
+const compact = (n) => Intl.NumberFormat("en", { notation: "compact" }).format(n);
+const when = (days) => (days > 1 ? `in ${days} days` : { 1: "tomorrow", 0: "today", [-1]: "yesterday" }[days] ?? `${-days} days ago`);
+const age = (hours) => (hours < 24 ? `${hours} h ago` : `${Math.round(hours / 24)} d ago`);
+
+async function loadTrending() {
+  el("trending").hidden = false;
+  el("trending-state").textContent = "Checking what India is watching…";
+  let t;
+  try { t = await api("/api/trends"); } catch (error) { el("trending-state").textContent = error.message; return; }
+  const chip = (text, cls) => Object.assign(document.createElement("li"), { textContent: text, title: text, className: `trend-chip ${cls}` });
+  el("trend-chips").replaceChildren(
+    ...t.upcoming.map((e) => chip(`${e.terms[0]} · ${when(e.days)}`, "is-upcoming")),
+    ...t.searches.map((s) => chip(`${s.term}${s.traffic ? ` · ${s.traffic}` : ""}`, "")));
+  el("trending-list").replaceChildren(...t.videos.map(trendRow));
+  el("trending-state").textContent = t.videos.length ? "Uploads beating their channel's usual views this week." :
+    "No fresh creator uploads right now. Edit the creator list in Settings.";
+}
+
+function trendRow(video) {
+  const node = watchRow({ channel: video.channel }, { ...video, views: 0, duration: 0 });
+  node.querySelector(".video-sub").textContent = [video.channel, `${video.ratio}× usual`, `${compact(video.views)} views`, age(video.age_h)].join(" · ");
+  return node;
 }
 
 async function loadChannels() {
@@ -49,7 +74,7 @@ async function addWatched(event) {
   button.disabled = true; button.textContent = "Adding…";
   try {
     const { id } = await api("/api/videos", "POST", { url: button.dataset.url, shape: f.shape.value, max_clips: Number(f.max_clips.value),
-      min_s: Number(f.min_s.value), max_s: Number(f.max_s.value), direction: f.direction.value.trim() });
+      min_s: Number(f.min_s.value), max_s: Number(f.max_s.value), direction: f.direction.value.trim(), live_minutes: Number(f.live_minutes.value) });
     location.hash = `#/video/${id}`;
   } catch (error) { showAlert(error.message); button.disabled = false; button.textContent = "Find clips"; }
 }
@@ -62,7 +87,7 @@ async function refresh() {
   try { videos = await api("/api/videos"); } catch (error) { showAlert(error.message); return; }
   el("library-empty").hidden = videos.length > 0;
   el("video-list").replaceChildren(...videos.map(row));
-  if (videos.some((v) => v.job || !DONE.has(v.stage))) timer = setTimeout(refresh, POLL_MS);
+  if (videos.some((v) => v.job)) timer = setTimeout(refresh, POLL_MS);
 }
 
 function row(video) {
@@ -75,6 +100,8 @@ function row(video) {
     stateEl.textContent = "Stopped: open it to see why"; stateEl.classList.add("is-failed");
   } else if (video.stage === "ready") {
     stateEl.textContent = `${video.clip_count} clip${video.clip_count === 1 ? "" : "s"}${video.kept ? ` · ${video.kept} exported` : ""}`;
+  } else if (!video.job) {
+    stateEl.textContent = "Stopped: open it to try again"; stateEl.classList.add("is-failed");
   } else {
     stateEl.textContent = video.stage === "new" || video.stage === "queued" ? "Waiting…" : `${video.stage}…`;
     stateEl.classList.add("is-busy");
@@ -95,7 +122,7 @@ async function addVideo(event) {
   el("add-button").disabled = true;
   try {
     const options = { shape: f.shape.value, max_clips: Number(f.max_clips.value), min_s: Number(f.min_s.value),
-                      max_s: Number(f.max_s.value), direction: f.direction.value.trim() };
+                      max_s: Number(f.max_s.value), direction: f.direction.value.trim(), live_minutes: Number(f.live_minutes.value) };
     let id;
     if (file) {
       el("add-button").textContent = "Uploading…";

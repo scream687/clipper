@@ -1,5 +1,5 @@
-from app.model import Video, Word
-from app.moments import apply_edges, build_prompt, find_clips, moments_to_clips
+from app.model import Clip, Video, Word
+from app.moments import apply_edges, build_prompt, cold_open_end, find_clips, lead_with_question, moments_to_clips
 from app.sentences import split_sentences
 from app.youtube import has_word_timing
 
@@ -137,3 +137,106 @@ def test_ending_pulls_in_the_hindi_auxiliary_but_not_into_the_next_clip():
     assert land_ending(v, _clip(0, 4), None).last_word == 5
     assert land_ending(v, _clip(0, 4), 5).last_word == 4
     assert land_ending(v, _clip(0, 6), None).last_word == 6
+
+
+def test_prompt_carries_trends_and_the_users_taste_only_when_given():
+    v = video()
+    sentences = split_sentences(v.words)
+    prompt = build_prompt(v, sentences, 20, 60, 30, "", trends="- GTA 6 / GTA VI: in 2 days (2026-11-19)",
+                          taste="Rated high:\n- rated 9/10: \"Money talk\"")
+    assert "GTA 6 / GTA VI: in 2 days" in prompt and "Never force a trend" in prompt
+    assert "rated 9/10" in prompt
+    plain = build_prompt(v, sentences, 20, 60, 30, "")
+    assert "searching and watching" not in plain and "rated clips" not in plain
+
+
+def test_long_transcripts_split_into_overlapping_parts_that_cover_everything():
+    from app.moments import split_parts
+    sentences = split_sentences(sentence_words(n_sentences=100))  # 100 sentences, 5 s apart = 500 s
+    parts = split_parts(sentences, part_s=120, overlap_s=20)
+    assert parts[0][0] == 0 and parts[-1][1] == 99
+    assert all(b[0] <= a[1] for a, b in zip(parts, parts[1:]))  # every boundary overlaps
+    assert len(split_parts(sentences, part_s=10_000)) == 1
+
+
+def test_every_part_is_asked_and_the_ranking_pass_reorders(monkeypatch):
+    from app import moments
+    monkeypatch.setattr(moments, "PART_S", 120)
+    v = Video(id="v", title="T", duration=500, fps=25, width=1920, height=1080, words=sentence_words(n_sentences=100))
+    asked = []
+
+    def ask(prompt, schema, system):
+        asked.append(schema)
+        if schema is moments.RANK_SCHEMA:
+            return {"scores": [{"id": n, "score": 10 - n} for n in range(20)]}  # earlier candidates rank higher
+        if schema is moments.EDGE_SCHEMA:
+            return {"clips": []}
+        first = int(prompt.split("[s", 1)[1].split(" ", 1)[0])  # first sentence id shown in this part
+        return {"moments": [{"first_sentence": first + 1, "last_sentence": first + 6, "title": f"m{first}", "hook": "h",
+                             "description": "d", "hashtags": "#a", "score": 5}]}
+
+    clips = moments.find_clips(v, ask, min_s=20, max_s=40)
+    parts = asked.count(moments.SCHEMA)
+    assert parts >= 4 and asked.count(moments.RANK_SCHEMA) == 1
+    assert [c.score for c in clips] == sorted((c.score for c in clips), reverse=True) and clips[0].score == 10
+
+
+def _said(lines: list[str], t0: float = 0.0, gap: float = 6.0) -> list[list[Word]]:
+    """One sentence per line, `gap` seconds apart, words 0.4 s each."""
+    out, t = [], t0
+    for line in lines:
+        out.append([Word(id=0, text=w, display=w, start=t + k * 0.4, end=t + k * 0.4 + 0.35) for k, w in enumerate(line.split())])
+        t += gap
+    return out
+
+
+TEASER = ["shame is the emotion that secretly controls people", "any emotion you avoid becomes your boss forever",
+          "write fifteen ways to work out tonight", "smart kids stop trying when praised for brains",
+          "a human scared of rejection rejects himself first"]
+CHAT = ["please subscribe to our channel today", "this episode is sponsored by a laptop", "check the link below now",
+        "welcome to the show joe", "thanks for having me raj"]
+
+
+def _renumber(sentences):
+    wid = 0
+    for s in sentences:
+        for w in s:
+            w.id = wid; wid += 1
+    return sentences
+
+
+def test_cold_open_teaser_is_found_because_its_lines_are_said_again_later():
+    sentences = _renumber(_said(TEASER) + _said(CHAT, t0=40) + _said(["filler talk number %d about many things" % i for i in range(20)], t0=80)
+                          + _said(TEASER, t0=600))
+    assert cold_open_end(sentences) == len(TEASER) - 1
+
+
+def test_no_teaser_when_the_opening_is_not_repeated():
+    sentences = _renumber(_said(CHAT) + _said(TEASER, t0=40) + _said(TEASER, t0=600))
+    assert cold_open_end(sentences) == -1
+
+
+def _clip_video(lines):
+    sentences = _renumber(_said(lines, gap=4.0))
+    words = [w for s in sentences for w in s]
+    return Video(id="v", title="T", duration=200, fps=25, width=1920, height=1080, words=words), sentences
+
+
+def test_clip_that_answers_a_question_starts_on_the_question():
+    v, s = _clip_video(["we talked about food", "what are the future trends in health care?", "diagnostic toilets will read your health",
+                        "every time you pee it tests you"])
+    clip = Clip(index=0, first_word=s[2][0].id, last_word=s[3][-1].id)
+    assert lead_with_question(v, clip, s, prev_last=None, max_s=60).first_word == s[1][0].id
+
+
+def test_question_is_not_pulled_in_when_too_long_already_in_another_clip_or_not_a_question():
+    v, s = _clip_video(["we talked about food", "what are the future trends in health care?", "diagnostic toilets will read your health",
+                        "every time you pee it tests you"])
+    clip = Clip(index=0, first_word=s[2][0].id, last_word=s[3][-1].id)
+    assert lead_with_question(v, clip, s, prev_last=None, max_s=5).first_word == clip.first_word        # too long
+    assert lead_with_question(v, clip, s, prev_last=s[1][-1].id, max_s=60).first_word == clip.first_word  # other clip
+    v2, s2 = _clip_video(["we talked about food", "theek hai?", "diagnostic toilets will read your health"])
+    tag = Clip(index=0, first_word=s2[2][0].id, last_word=s2[2][-1].id)
+    assert lead_with_question(v2, tag, s2, prev_last=None, max_s=60).first_word == tag.first_word        # filler tag
+    plain = Clip(index=0, first_word=s[1][0].id, last_word=s[3][-1].id)
+    assert lead_with_question(v, plain, s, prev_last=None, max_s=60).first_word == plain.first_word     # food line

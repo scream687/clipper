@@ -83,3 +83,45 @@ def test_face_lost_without_a_cut_holds_the_crop():
     # Speaker looks down for 2 s in the same shot: keep the crop where it was, no whole-frame flash.
     samples = [(n / 10, 0.5) for n in range(30)] + [(n / 10, None) for n in range(30, 50)] + [(n / 10, 0.5) for n in range(50, 80)]
     assert not any(k.fit for k in keys_from_samples(samples, cuts=[]))
+
+
+import numpy as np
+
+from app.framing import cam_box
+
+
+def _gameplay_with_facecam(n=8, seed=1):
+    """Grey noise that changes every frame (gameplay) with a bordered box fixed in the top-right corner (the facecam)."""
+    rng = np.random.default_rng(seed)
+    frames = rng.uniform(60, 120, (n, 270, 480)).astype(np.float32)
+    frames[:, 0:70, 370:372] = 255   # left border of the cam, x 370
+    frames[:, 68:70, 370:480] = 255  # bottom border, y 68
+    return frames
+
+
+def test_facecam_box_snaps_to_the_still_border_around_a_corner_face():
+    faces = [(425.0, 32.0, 28.0)] * 8  # a small face in the cam, every frame
+    x, y, w, h = cam_box(_gameplay_with_facecam(), faces)
+    assert abs(x * 480 - 373) <= 2 and abs((y + h) * 270 - 65) <= 3 and x + w > 0.97 and y < 0.02
+
+
+def test_no_facecam_without_a_steady_small_corner_face():
+    frames = _gameplay_with_facecam()
+    assert cam_box(frames, []) is None
+    assert cam_box(frames, [(425.0, 32.0, 28.0)] * 2) is None   # seen in too few frames
+    assert cam_box(frames, [(240.0, 135.0, 120.0)] * 8) is None  # a big face is the shot itself
+    assert cam_box(frames, [(240.0, 135.0, 28.0)] * 8) is None   # small but mid-frame: someone in a wide shot
+
+
+def test_tiles_cover_the_frame_and_overlap():
+    from app.framing import tile_boxes
+    boxes = tile_boxes(3, 2)
+    assert len(boxes) == 6 and boxes[0][:2] == (0.0, 0.0)
+    assert all(abs(x + w - 1) < 1e-9 for x, _, w, _ in boxes[2::3]) and all(abs(y + h - 1) < 1e-9 for _, y, _, h in boxes[3:])
+    assert boxes[1][0] < boxes[0][0] + boxes[0][2]  # neighbours overlap
+    assert tile_boxes(1, 1) == [(0.0, 0.0, 1.0, 1.0)]
+
+
+def test_a_face_seen_in_two_tiles_counts_once():
+    from app.framing import merge_faces
+    assert merge_faces([(0.50, 0.002, 0.1), (0.51, 0.003, 0.1), (0.8, 0.002, 0.2)]) == [(0.51, 0.003, 0.1), (0.8, 0.002, 0.2)]

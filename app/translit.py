@@ -11,6 +11,7 @@ import re
 from typing import Callable
 
 from app import DATA_DIR
+from app.ai import AIUnavailable
 
 CACHE = DATA_DIR / "translit.json"
 BATCH = 300
@@ -68,21 +69,29 @@ def romanize(texts: list[str], ask: AskFn, log: Callable[[str], None] = lambda m
     """Map every distinct Devanagari text in `texts` to Roman Hinglish."""
     cache = _load_cache()
     todo = sorted({t for t in texts if needs_roman(t) and t not in cache})
+    rough: dict[str, str] = {}  # rule-based spellings: used now, never cached, so a later AI run can do better
+    ai_down = False
     for start in range(0, len(todo), BATCH):
         batch = todo[start:start + BATCH]
         log(f"Writing Hinglish captions {min(start + BATCH, len(todo))}/{len(todo)} words")
-        try:
-            answer = ask(_prompt(batch), SCHEMA, SYSTEM)
-        except Exception as error:  # the AI being unavailable must not lose the captions: fall back per word
-            log(f"AI conversion failed ({str(error)[:120]}); using the rule-based spelling for this batch")
-            answer = {"items": []}
+        answer = {"items": []}
+        if not ai_down:
+            try:
+                answer = ask(_prompt(batch), SCHEMA, SYSTEM)
+            except Exception as error:  # the AI being unavailable must not lose the captions: fall back per word
+                log(f"AI conversion failed ({str(error)[:120]}); using the rule-based spelling")
+                ai_down = isinstance(error, AIUnavailable)  # do not wait on a dead AI once per batch
         got = {item["i"]: item["r"].strip() for item in answer.get("items", [])
                if isinstance(item.get("i"), int) and 0 <= item["i"] < len(batch) and item.get("r", "").strip()}
         for i, word in enumerate(batch):
             roman = got.get(i, "")
-            cache[word] = roman if roman and not needs_roman(roman) else fallback(word)
+            if roman and not needs_roman(roman):
+                cache[word] = roman
+            else:
+                rough[word] = fallback(word)
         _save_cache(cache)
-    return {t: cache[t] for t in texts if t in cache}
+    known = {**rough, **cache}
+    return {t: known[t] for t in texts if t in known}
 
 
 SENTENCE_BATCH = 120
@@ -111,14 +120,17 @@ def romanize_in_context(sentences: list[list[str]], ask: AskFn, log: Callable[[s
     result = [list(s) for s in sentences]
     todo = [(i, s) for i, s in enumerate(sentences) if any(needs_roman(w) for w in s)]
     fixed = 0
+    ai_down = False
     for start in range(0, len(todo), SENTENCE_BATCH):
         batch = todo[start:start + SENTENCE_BATCH]
         log(f"Writing Hinglish captions {min(start + SENTENCE_BATCH, len(todo))}/{len(todo)} sentences")
-        try:
-            answer = ask(_context_prompt(batch), CONTEXT_SCHEMA, SYSTEM)
-        except Exception as error:  # fall back below rather than losing captions
-            log(f"AI conversion failed ({str(error)[:120]}); using word-by-word spelling for this batch")
-            answer = {"sentences": []}
+        answer = {"sentences": []}
+        if not ai_down:
+            try:
+                answer = ask(_context_prompt(batch), CONTEXT_SCHEMA, SYSTEM)
+            except Exception as error:  # fall back below rather than losing captions
+                log(f"AI conversion failed ({str(error)[:120]}); using word-by-word spelling")
+                ai_down = isinstance(error, AIUnavailable)
         got = {item["s"]: item["words"] for item in answer.get("sentences", []) if isinstance(item.get("s"), int)}
         for i, words in batch:
             roman = got.get(i)

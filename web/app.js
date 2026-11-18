@@ -1,6 +1,6 @@
 // Router and settings. Screens: #/ library, #/video/<id>, #/clip/<id>/<n>.
 
-import { api, el, showAlert } from "./util.js";
+import { api, clock, el, showAlert } from "./util.js";
 import { leaveLibrary, showLibrary, wireLibrary } from "./library.js";
 import { leaveVideo, showVideo, wireVideo } from "./video.js";
 import { leaveEditor, scrollToClipStart, showEditor } from "./editor.js";
@@ -30,9 +30,19 @@ async function route() {
 
 async function loadSettings() {
   const settings = await api("/api/settings");
-  el("settings-form").elements.handle.value = settings.handle;
-  el("settings-form").elements.channels.value = settings.channels.join("\n");
+  const form = el("settings-form").elements;
+  form.handle.value = settings.handle || "";
+  form.brand.value = settings.brand || "";
+  for (const name of ["channels", "upcoming", "trend_creators"]) form[name].value = (settings[name] || []).join("\n");
+  form.export_quality.value = settings.export_quality || "1080";
+  form.export_fps.value = settings.export_fps || "source";
   showOpusKey(settings.has_opusclip_key);
+  showPexelsKey(settings.has_pexels_key);
+}
+
+function showPexelsKey(saved) {
+  const field = el("settings-form").elements.pexels_key;
+  field.value = ""; field.placeholder = saved ? "Saved (leave blank to keep)" : "";
 }
 
 function showOpusKey(saved) {
@@ -40,6 +50,8 @@ function showOpusKey(saved) {
   field.value = "";
   field.placeholder = saved ? "Saved. Leave blank to keep it." : "From OpusClip → Settings → API";
 }
+
+const lines = (text) => text.split("\n").map((c) => c.trim()).filter(Boolean);
 
 el("settings-toggle").addEventListener("click", () => {
   const open = el("settings").hidden;
@@ -50,12 +62,89 @@ el("settings-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
     const f = event.currentTarget.elements;
-    const saved = await api("/api/settings", "PUT", { handle: f.handle.value.trim(), opusclip_key: f.opusclip_key.value.trim(),
-      channels: f.channels.value.split("\n").map((c) => c.trim()).filter(Boolean) });
+    const saved = await api("/api/settings", "PUT", { handle: f.handle.value.trim(), brand: f.brand.value.trim(), opusclip_key: f.opusclip_key.value.trim(), pexels_key: f.pexels_key.value.trim(),
+      channels: lines(f.channels.value), upcoming: lines(f.upcoming.value), trend_creators: lines(f.trend_creators.value),
+      export_quality: f.export_quality.value, export_fps: f.export_fps.value });
     showOpusKey(saved.has_opusclip_key);
+    showPexelsKey(saved.has_pexels_key);
     el("settings-status").textContent = "Saved. New previews and exports use it.";
   } catch (error) { el("settings-status").textContent = error.message; }
 });
+
+// ---------- brand: logo and music library ----------
+const fileForm = (file) => { const f = new FormData(); f.append("file", file); return f; };
+
+function showLogo(info) {
+  el("logo-preview").hidden = !info.has_logo;
+  if (info.has_logo) el("logo-preview").src = `/api/logo.png?v=${Date.now()}`;
+  el("logo-remove").hidden = !info.has_logo;
+}
+
+function showMusic(tracks) {
+  el("music-list").replaceChildren(...tracks.map((t) => {
+    const row = document.createElement("li"), remove = document.createElement("button");
+    row.textContent = `${t.name} · ${clock(t.duration)}`;
+    Object.assign(remove, { type: "button", className: "text-button", textContent: "Delete" });
+    remove.dataset.name = t.name;
+    row.append(remove);
+    return row;
+  }));
+}
+
+async function brandAction(work, done) {
+  el("brand-status").textContent = "Working…";
+  try { done(await work()); el("brand-status").textContent = "Saved."; } catch (error) { el("brand-status").textContent = error.message; }
+}
+
+el("logo-file").addEventListener("change", (e) => {
+  const file = e.target.files[0];
+  if (file) brandAction(() => api("/api/logo", "POST", fileForm(file)), showLogo).finally(() => { e.target.value = ""; });
+});
+el("logo-remove").addEventListener("click", () => brandAction(() => api("/api/logo", "DELETE"), showLogo));
+el("music-file").addEventListener("change", (e) => {
+  const file = e.target.files[0];
+  if (file) brandAction(() => api("/api/music", "POST", fileForm(file)), showMusic).finally(() => { e.target.value = ""; });
+});
+el("music-list").addEventListener("click", (e) => {
+  const name = e.target.dataset?.name;
+  if (name && confirm(`Delete ${name} from the music library?`)) brandAction(() => api(`/api/music/${encodeURIComponent(name)}`, "DELETE"), showMusic);
+});
+api("/api/logo").then(showLogo).catch(() => {});
+api("/api/music").then(showMusic).catch(() => {});
+
+function showSounds(sounds) {
+  const roles = { meme: "punchline meme", whoosh: "whoosh", pop: "pop", impact: "impact", riser: "riser" };
+  el("sfx-list").replaceChildren(...sounds.map((s) => {
+    const row = document.createElement("li"), play = document.createElement("button");
+    Object.assign(play, { type: "button", className: "text-button", textContent: "Play" });
+    play.dataset.play = s.name;
+    row.append(`${s.name} · ${roles[s.role] || s.role}${s.built_in ? " · built in" : s.safe ? "" : " · may be claimed"} `, play);
+    if (!s.built_in) {
+      const remove = document.createElement("button");
+      Object.assign(remove, { type: "button", className: "text-button", textContent: "Delete" });
+      remove.dataset.name = s.name;
+      row.append(" ", remove);
+    }
+    return row;
+  }));
+}
+el("sfx-import").addEventListener("click", () => {
+  const url = el("sfx-url").value.trim();
+  if (!url) { el("brand-status").textContent = "Paste a myinstants.com link first."; return; }
+  brandAction(() => api("/api/sfx/import", "POST", { url, role: el("sfx-role").value }), showSounds).then(() => { el("sfx-url").value = ""; });
+});
+el("sfx-file").addEventListener("change", (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const form = fileForm(file); form.append("role", el("sfx-role").value);
+  brandAction(() => api("/api/sfx", "POST", form), showSounds).finally(() => { e.target.value = ""; });
+});
+el("sfx-list").addEventListener("click", (e) => {
+  const { play, name } = e.target.dataset || {};
+  if (play) new Audio(`/api/sfx/${encodeURIComponent(play)}`).play().catch(() => {});
+  if (name && confirm(`Delete ${name}?`)) brandAction(() => api(`/api/sfx/${encodeURIComponent(name)}`, "DELETE"), showSounds);
+});
+api("/api/sfx").then(showSounds).catch(() => {});
 
 // ---------- AI provider and model ----------
 const ai = { providers: [], keyUrls: [], models: [] };

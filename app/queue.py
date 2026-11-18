@@ -73,6 +73,13 @@ def get(job_id: str) -> dict[str, Any] | None:
         return {**job, "log": list(job["log"])} if job else None
 
 
+def busy_under(video_id: str) -> bool:
+    """True while any job about this video or one of its parts (`id/3`, `id/zip`, `id/opusclip`) is queued or running."""
+    with _lock:
+        return any(job["status"] in ("queued", "running") and (job["subject"] == video_id or job["subject"].startswith(f"{video_id}/"))
+                   for job in _jobs.values())
+
+
 def active_for(subject: str) -> dict[str, Any] | None:
     """The newest queued or running job about `subject`, if any."""
     with _lock:

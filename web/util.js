@@ -18,10 +18,11 @@ function describeError(body, status) {
 export async function api(path, method = "GET", payload) {
   let response;
   try {
+    const form = payload instanceof FormData;  // file uploads go as multipart; the browser sets the boundary
     response = await fetch(path, {
       method,
-      headers: payload ? { "content-type": "application/json" } : {},
-      body: payload ? JSON.stringify(payload) : undefined,
+      headers: payload && !form ? { "content-type": "application/json" } : {},
+      body: payload ? (form ? payload : JSON.stringify(payload)) : undefined,
     });
   } catch {
     throw new Error("Cannot reach the clipper server. Is run.sh still running?");

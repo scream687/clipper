@@ -10,14 +10,15 @@ const KEY_MERGE_S = 0.4;      // a new manual crop key replaces keys this close 
 const DRAG_MIN_PX = 4;        // pointer travel before a press counts as dragging the crop
 const POLL_MS = 1000;
 
-let state = null;             // { videoId, index, words, clip, plan, sel: {a, b} | null }
+let state = null;             // { videoId, index, words, clip, saved, plan, sel: {a, b} | null }
 let preview = null;
 let saveTimer = null;
+let editVersion = 0;          // bumped by every local edit; a save reply only replaces the clip if nothing changed since
 
 function ensurePreview() {
   if (preview) return preview;
   preview = new Preview({
-    stage: el("stage"), videos: [el("stage-a"), el("stage-b")], fill: el("stage-fill"), overlay: el("overlay"),
+    stage: el("stage"), videos: [el("stage-a"), el("stage-b")], fill: el("stage-fill"), split: el("stage-split"), overlay: el("overlay"),
     onTime: (t) => updateTime(t),
     onEnd: () => { el("play").textContent = "Play"; },
   });
@@ -29,10 +30,15 @@ export async function showEditor(videoId, index) {
   ensurePreview();
   showAlert("");
   el("editor-back").href = `#/video/${videoId}`;
-  const [video, words, body] = await Promise.all([
+  const [video, words, body, tracks, logo] = await Promise.all([
     api(`/api/videos/${videoId}`), api(`/api/videos/${videoId}/words`), api(`/api/videos/${videoId}/clips/${index}`),
+    api("/api/music"), api("/api/logo"),
   ]);
-  state = { videoId, index, words, clip: body.clip, plan: body.plan, sel: null, video };
+  fillBrandChoices(tracks, logo, body.clip);
+  preview.tweetUrl = `/api/videos/${videoId}/clips/${index}/tweet.png`;
+  clearTimeout(saveTimer);
+  state = { videoId, index, words, clip: body.clip, saved: body.clip, plan: body.plan, sel: null, video };
+  el("export").disabled = false;
   document.title = `${body.clip.title || "Clip"} · Clipper`;
   el("editor-title").textContent = body.clip.title || "Untitled clip";
   preview.pause();
@@ -45,6 +51,16 @@ export async function showEditor(videoId, index) {
   showDiscard();
 }
 
+// Tracks from the music library; a clip pointing at a deleted one keeps it listed so the choice is visible.
+function fillBrandChoices(tracks, logo, clip) {
+  const names = tracks.map((t) => t.name);
+  if (clip.music && !names.includes(clip.music)) names.push(clip.music);
+  el("look-form").elements.music.replaceChildren(new Option("None", ""), ...names.map((n) => new Option(n, n)));
+  const toggle = el("look-form").elements.show_logo;
+  toggle.disabled = !logo.has_logo;
+  toggle.closest("label").title = logo.has_logo ? "" : "Add a logo in Settings first";
+}
+
 function showDiscard() {
   el("discard").textContent = state.clip.status === "discarded" ? "Restore clip" : "Discard clip";
 }
@@ -52,58 +68,107 @@ function showDiscard() {
 // ---------- form ----------
 function fillForm() {
   const f = el("look-form").elements, c = state.clip;
-  ["look", "shape", "framing"].forEach((name) => { f[name].value = c[name]; });
+  ["look", "shape", "framing", ...CANVAS, ...EXTRAS, ...TEMPLATE].forEach((name) => { f[name].value = c[name]; });
+  EXTRA_FLAGS.forEach((name) => { f[name].checked = c[name]; });
+  showCanvasValues();
   ["show_hook", "show_handle", "show_credit", "swear_filter", "show_emoji"].forEach((name) => { f[name].checked = c[name]; });
   el("emoji-list").textContent = Object.values(c.emoji_words).join(" ");
   ["hook", "title", "description", "hashtags"].forEach((name) => { f[name].value = c[name]; });
+  f.rating.value = c.rating ?? "";
+}
+
+const CANVAS = ["background", "bg_color", "bg_color2", "padding", "radius"];
+const EXTRAS = ["music", "music_volume", "music_peak", "riser_s", "logo_corner", "logo_size"];  // numbers except music/corner
+const EXTRA_FLAGS = ["show_logo", "show_follow", "tighten", "punch_in", "sfx", "sfx_safe_only", "show_progress", "show_broll"];
+const TEMPLATE = ["template", "tweet_theme"];
+
+function showCanvasValues() {
+  const f = el("look-form").elements;
+  f.padding_out.value = `${f.padding.value}%`;
+  f.music_volume_out.value = `${f.music_volume.value}%`;
+  f.music_peak_out.value = `${f.music_peak.value}%`;
+  f.riser_s_out.value = `${f.riser_s.value} s`;
+  f.logo_size_out.value = `${f.logo_size.value}%`;
+  el("logo-controls").hidden = !f.show_logo.checked;
+  f.tweet_theme.hidden = f.template.value !== "tweet";
+  el("framing-controls").hidden = el("canvas-controls").hidden = f.template.value === "tweet";  // the post sets both
+  f.radius_out.value = `${f.radius.value}px`;
+  f.bg_color2.closest("label").hidden = f.background.value !== "gradient";
+  f.bg_color.closest("label").hidden = f.background.value === "blur";
+  f.bg_color.closest("label").firstElementChild.textContent = f.background.value === "gradient" ? "Top" : "Colour";
 }
 
 function readForm() {
   const f = el("look-form").elements;
+  showCanvasValues();
   return {
+    background: f.background.value, bg_color: f.bg_color.value.toUpperCase(), bg_color2: f.bg_color2.value.toUpperCase(),
+    padding: Number(f.padding.value), radius: Number(f.radius.value),
+    music: f.music.value, logo_corner: f.logo_corner.value, template: f.template.value, tweet_theme: f.tweet_theme.value,
+    ...Object.fromEntries(["music_volume", "music_peak", "riser_s", "logo_size"].map((k) => [k, Number(f[k].value)])),
+    ...Object.fromEntries(EXTRA_FLAGS.map((k) => [k, f[k].checked])),
     look: f.look.value, shape: f.shape.value, framing: f.framing.value,
     show_hook: f.show_hook.checked, show_handle: f.show_handle.checked, show_credit: f.show_credit.checked,
     swear_filter: f.swear_filter.checked, show_emoji: f.show_emoji.checked, hook: f.hook.value, title: f.title.value, description: f.description.value, hashtags: f.hashtags.value,
+    rating: f.rating.value ? Number(f.rating.value) : null,
   };
 }
 
 function edit(changes, { now = false } = {}) {
   state.clip = { ...state.clip, ...changes };
+  editVersion += 1;
   el("save-state").textContent = "Saving…";
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(save, now ? 0 : SAVE_DELAY_MS);
+  saveTimer = setTimeout(saveQuietly, now ? 0 : SAVE_DELAY_MS);
   renderTranscript();
 }
 
+// Saves the current clip. Replies for another clip, or older than a later edit, are ignored, so a slow
+// reply never overwrites newer typing. A rejected save puts back the last stored clip and throws.
 async function save() {
-  const c = state.clip;
+  if (!state) return;
+  const c = state.clip, { videoId, index } = state, version = editVersion;
   const payload = {
     first_word: c.first_word, last_word: c.last_word, cut_word_ids: c.cut_word_ids, text_fixes: c.text_fixes,
-    look: c.look, shape: c.shape, framing: c.framing, manual_keys: c.manual_keys, hook: c.hook,
+    look: c.look, shape: c.shape, framing: c.framing, ...Object.fromEntries([...CANVAS, ...EXTRAS, ...EXTRA_FLAGS, ...TEMPLATE].map((k) => [k, c[k]])), manual_keys: c.manual_keys, split_cam: c.split_cam ?? null, split_bottom: c.split_bottom ?? null, hook: c.hook,
     show_hook: c.show_hook, show_handle: c.show_handle, show_credit: c.show_credit, swear_filter: c.swear_filter,
     emoji_words: c.emoji_words, show_emoji: c.show_emoji,
-    title: c.title, description: c.description, hashtags: c.hashtags, status: c.status,
+    emphasis_words: c.emphasis_words ?? [], meme_word: c.meme_word ?? null, broll: c.broll ?? [],  // the AI's edit picks
+    title: c.title, description: c.description, hashtags: c.hashtags, status: c.status, rating: c.rating ?? null,
   };
+  const current = () => state && state.videoId === videoId && state.index === index;
+  let body;
   try {
-    const body = await api(`/api/videos/${state.videoId}/clips/${state.index}`, "PUT", payload);
-    state.clip = body.clip; state.plan = body.plan;
-    preview.setPlan(body.plan);
-    el("save-state").textContent = "Saved";
-    el("editor-title").textContent = body.clip.title || "Untitled clip";
-    renderTranscript();
+    body = await api(`/api/videos/${videoId}/clips/${index}`, "PUT", payload);
   } catch (error) {
-    el("save-state").textContent = "";
+    if (!current()) return;
+    if (version === editVersion) {  // undo the rejected edit so later saves are not stuck repeating it
+      state.clip = state.saved; fillForm(); renderTranscript(); showDiscard();
+    }
+    el("save-state").textContent = "Not saved";
     showAlert(error.message);
+    throw error;
   }
+  if (!current()) return;
+  state.saved = body.clip;
+  if (version !== editVersion) return;  // newer edits are waiting for their own save
+  state.clip = body.clip; state.plan = body.plan;
+  preview.setPlan(body.plan);
+  el("save-state").textContent = "Saved";
+  el("editor-title").textContent = body.clip.title || "Untitled clip";
+  renderTranscript();
 }
+
+const saveQuietly = () => save().catch(() => {});  // the error is already shown
 
 // ---------- transcript ----------
 function renderTranscript() {
+  const box = el("transcript");
+  if (box.querySelector(".word-input")) return;  // a word is being corrected; it re-renders when that finishes
   const c = state.clip, words = state.words;
   const from = Math.max(0, c.first_word - CONTEXT_WORDS), to = Math.min(words.length - 1, c.last_word + CONTEXT_WORDS);
   const cut = new Set(c.cut_word_ids), fixes = c.text_fixes;
   const sel = state.sel ? [Math.min(state.sel.a, state.sel.b), Math.max(state.sel.a, state.sel.b)] : null;
-  const box = el("transcript");
   const nodes = [];
   for (let id = from; id <= to; id++) {
     const span = document.createElement("span");
@@ -127,7 +192,11 @@ function renderTranscript() {
 function scrollToClipStart() {
   // Scroll only the transcript box; scrollIntoView would also scroll the page.
   const box = el("transcript"), first = box.querySelector(`[data-id="${state?.clip.first_word}"]`);
-  if (first) box.scrollTop = first.offsetTop - box.clientHeight / 3;
+  // Measured against the box itself: offsetTop counts from the nearest positioned ancestor, which overshoots on phones.
+  if (!first) return;
+  const lineH = parseFloat(getComputedStyle(box).lineHeight) || 32;
+  const target = box.scrollTop + first.getBoundingClientRect().top - box.getBoundingClientRect().top - box.clientHeight / 3;
+  box.scrollTop = Math.round(target / lineH) * lineH;  // whole lines, so no line is cut in half at the top
 }
 
 function selected() {
@@ -146,22 +215,32 @@ function onWordClick(event) {
   if (word) preview.seek(word.start);
 }
 
-function setStart() {
-  const ids = selected(); if (!ids.length) return;
+// The word being said at the playhead (I / O keys trim there, like an editor's in and out points).
+function wordAtPlayhead() {
+  const t = preview.time ?? 0;
+  let id = null;
+  for (const w of state.plan.words) { if (w.start <= t + 1e-3) id = w.word_id; else break; }
+  return id ?? state.plan.words[0]?.word_id;
+}
+
+function setStart(at) {
+  const ids = typeof at === "number" ? [at] : selected(); if (!ids.length) return;
   const first = ids[0];
   if (first > state.clip.last_word) return showAlert("The start must be before the clip's end.");
-  edit({ first_word: first, cut_word_ids: state.clip.cut_word_ids.filter((i) => i >= first), text_fixes: keepFixes(first, state.clip.last_word) });
+  edit({ first_word: first, cut_word_ids: state.clip.cut_word_ids.filter((i) => i >= first), ...keepInside(first, state.clip.last_word) });
 }
 
-function setEnd() {
-  const ids = selected(); if (!ids.length) return;
+function setEnd(at) {
+  const ids = typeof at === "number" ? [at] : selected(); if (!ids.length) return;
   const last = ids[ids.length - 1];
   if (last < state.clip.first_word) return showAlert("The end must be after the clip's start.");
-  edit({ last_word: last, cut_word_ids: state.clip.cut_word_ids.filter((i) => i <= last), text_fixes: keepFixes(state.clip.first_word, last) });
+  edit({ last_word: last, cut_word_ids: state.clip.cut_word_ids.filter((i) => i <= last), ...keepInside(state.clip.first_word, last) });
 }
 
-function keepFixes(first, last) {
-  return Object.fromEntries(Object.entries(state.clip.text_fixes).filter(([k]) => Number(k) >= first && Number(k) <= last));
+// Word fixes and emojis outside the new edges are dropped (the server rejects them).
+function keepInside(first, last) {
+  const inside = (obj) => Object.fromEntries(Object.entries(obj).filter(([k]) => Number(k) >= first && Number(k) <= last));
+  return { text_fixes: inside(state.clip.text_fixes), emoji_words: inside(state.clip.emoji_words) };
 }
 
 function toggleCut() {
@@ -206,6 +285,15 @@ function fixWord() {
 }
 
 // ---------- crop dragging ----------
+const WHEEL_ZOOM = 0.002;  // crop size change per wheel pixel (exponential, so in and out feel the same)
+const CAM_MIN = 0.05;      // the facecam crop is never narrower than this share of the frame
+const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
+const camShare = ([x, y, w, h]) => {
+  const p = state.plan, r = (v) => Math.round(v * 10000) / 10000;
+  return [r(x / p.source_width), r(y / p.source_height), r(w / p.source_width), r(h / p.source_height)];
+};
+const onCam = (e) => e.offsetY < el("stage").clientHeight * state.plan.split.top_h / state.plan.height;
+
 function wireCropDrag() {
   const stage = el("stage");
   let drag = null;
@@ -213,17 +301,50 @@ function wireCropDrag() {
     if (!state || state.plan.framing === "fill") return;
     stage.setPointerCapture(e.pointerId);
     stage.classList.add("is-dragging");
-    drag = { x: e.clientX, cx: preview.cropAt(preview.time ?? 0) };
+    const p = state.plan;
+    if (p.framing === "split") {  // each half has its own crop: drag the one under the pointer
+      drag = { x: e.clientX, y: e.clientY, half: onCam(e) ? "top" : "bottom", start: preview.splitAt(onCam(e) ? "top" : "bottom") };
+      return;
+    }
+    drag = { x: e.clientX, cx: preview.cropAt(preview.time ?? 0), span: p.crop_w / p.source_width };
   });
   stage.addEventListener("pointermove", (e) => {
-    if (!drag || (!drag.moved && Math.abs(e.clientX - drag.x) < DRAG_MIN_PX)) return;
+    if (!drag || (!drag.moved && Math.hypot(e.clientX - drag.x, e.clientY - (drag.y ?? e.clientY)) < DRAG_MIN_PX)) return;
     drag.moved = true;  // a click (or Chrome's zero-distance pointermove) must not pin the crop
-    const p = state.plan, frac = (e.clientX - drag.x) / stage.clientWidth * (p.crop_w / p.source_width);
-    preview.setCropOverride(Math.min(Math.max(drag.cx - frac, 0), 1));
+    const p = state.plan, dx = e.clientX - drag.x;
+    if (drag.half === "top") {  // the facecam crop moves both ways, in source pixels
+      const [x, y, w, h] = drag.start, topPx = stage.clientHeight * p.split.top_h / p.height;
+      preview.setSplitOverride("top", [clamp(x - dx * w / stage.clientWidth, 0, p.source_width - w),
+        clamp(y - (e.clientY - drag.y) * h / topPx, 0, p.source_height - h), w, h]);
+      return;
+    }
+    const span = (drag.half ? p.split.crop_w : p.crop_w) / p.source_width;
+    const cx = clamp((drag.half ? drag.start : drag.cx) - dx / stage.clientWidth * span, 0, 1);
+    if (drag.half) { preview.setSplitOverride("bottom", cx); return; }
+    preview.setCropOverride(cx);
   });
+  // Scrolling over the facecam zooms its crop around the centre.
+  stage.addEventListener("wheel", (e) => {
+    if (!state || state.plan.framing !== "split" || !onCam(e)) return;
+    e.preventDefault();
+    const p = state.plan, [x, y, w, h] = preview.splitAt("top");
+    const nw = Math.min(clamp(w * Math.exp(e.deltaY * WHEEL_ZOOM), p.source_width * CAM_MIN, p.source_width), p.source_height * w / h);
+    const nh = nw * h / w;
+    const rect = [clamp(x + (w - nw) / 2, 0, p.source_width - nw), clamp(y + (h - nh) / 2, 0, p.source_height - nh), nw, nh];
+    preview.setSplitOverride("top", rect);
+    edit({ split_cam: camShare(rect) });
+  }, { passive: false });
   const end = () => {
     if (!drag) return;
     stage.classList.remove("is-dragging");
+    if (drag.half) {
+      const { half, moved } = drag;
+      drag = null;
+      if (!moved) return;
+      const value = preview.splitAt(half);
+      edit(half === "top" ? { split_cam: camShare(value) } : { split_bottom: Math.round(value * 10000) / 10000 }, { now: true });
+      return;
+    }
     const cx = preview.cropOverride;
     drag = null;
     if (cx === null || cx === undefined) return;
@@ -235,7 +356,9 @@ function wireCropDrag() {
     edit({ manual_keys: keys }, { now: true });
   };
   stage.addEventListener("pointerup", end);
-  stage.addEventListener("pointercancel", () => { drag = null; stage.classList.remove("is-dragging"); preview.setCropOverride(null); });
+  stage.addEventListener("pointercancel", () => {
+    drag = null; stage.classList.remove("is-dragging"); preview.setCropOverride(null); preview.setSplitOverride(null);
+  });
 }
 
 // ---------- time / export ----------
@@ -268,7 +391,10 @@ async function followExport(jobId) {
     try { job = await api(`/api/jobs/${jobId}`); } catch (error) { showAlert(error.message); break; }
     if (!state || state.videoId !== videoId || state.index !== index) return;
     el("export-state").textContent = job.status === "queued" ? "Waiting for another export…" : (job.log.at(-1) || "Exporting…");
-    if (job.status === "done") { showExportState(true); break; }
+    if (job.status === "done") {  // the server marked it kept; keep that so the next save does not undo it
+      state.clip = { ...state.clip, status: "kept" }; state.saved = { ...state.saved, status: "kept" };
+      showExportState(true); break;
+    }
     if (job.status === "error") { el("export-state").textContent = ""; showAlert(job.error); break; }
     await wait(POLL_MS);
   }
@@ -277,7 +403,7 @@ async function followExport(jobId) {
 
 async function exportClip() {
   clearTimeout(saveTimer);
-  await save();
+  try { await save(); } catch { return; }  // never export an older version than what the user sees
   try {
     const { job } = await api(`/api/videos/${state.videoId}/clips/${state.index}/export`, "POST");
     followExport(job);
@@ -293,9 +419,9 @@ function wireControls() {
   el("tool-end").addEventListener("click", setEnd);
   el("tool-cut").addEventListener("click", toggleCut);
   el("tool-fix").addEventListener("click", fixWord);
-  el("reset-crop").addEventListener("click", () => edit({ manual_keys: [] }, { now: true }));
+  el("reset-crop").addEventListener("click", () => edit({ manual_keys: [], split_cam: null, split_bottom: null }, { now: true }));
   el("look-form").addEventListener("input", (e) => {
-    const instant = e.target.type === "radio" || e.target.type === "checkbox";
+    const instant = e.target.type === "radio" || e.target.type === "checkbox" || e.target.tagName === "SELECT";
     edit(readForm(), { now: instant });
   });
   el("export").addEventListener("click", exportClip);
@@ -309,21 +435,59 @@ function wireControls() {
     const button = e.currentTarget;
     button.disabled = true; button.textContent = "Asking the AI…";
     clearTimeout(saveTimer);
-    await save();
     try {
+      await save();
       const body = await api(`/api/videos/${state.videoId}/clips/${state.index}/emojis`, "POST");
-      state.clip = body.clip; state.plan = body.plan; preview.setPlan(body.plan); fillForm();
+      state.clip = state.saved = body.clip; state.plan = body.plan; preview.setPlan(body.plan); fillForm();
     } catch (error) { showAlert(error.message); }
     button.disabled = false; button.textContent = "Suggest emojis";
   });
+  el("look-save-default").addEventListener("click", () => lookAction("PUT", "/api/house-look", (r) => "New clips will start with this look."));
+  el("look-apply-all").addEventListener("click", () => lookAction("POST", `/api/videos/${state.videoId}/apply-look`,
+    (r) => `Applied to ${r.updated} other clip${r.updated === 1 ? "" : "s"}.`));
   el("emoji-clear").addEventListener("click", () => { edit({ emoji_words: {} }, { now: true }); el("emoji-list").textContent = ""; });
   wireCropDrag();
+  wireTabs();
   document.addEventListener("keydown", (e) => {
     if (el("view-editor").hidden || !state) return;
     if (e.target.closest("input, textarea, select")) return;
-    const actions = { " ": () => el("play").click(), "[": setStart, "]": setEnd, Delete: toggleCut, Backspace: toggleCut, Enter: fixWord };
-    if (actions[e.key] && !e.metaKey && !e.ctrlKey) { e.preventDefault(); actions[e.key](); }
+    if ((e.key === " " || e.key === "Enter") && e.target.closest("button, a, summary")) return;  // let them press
+    const actions = { " ": () => el("play").click(), "[": () => setStart(), "]": () => setEnd(), Delete: toggleCut, Backspace: toggleCut,
+                      Enter: fixWord, i: () => setStart(wordAtPlayhead()), o: () => setEnd(wordAtPlayhead()) };
+    const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    if (actions[key] && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); actions[key](); }
   });
+}
+
+// Style / Sound & extras / Post text: one form split into panes (arrow keys move between tabs).
+function wireTabs() {
+  const tabs = [...document.querySelectorAll(".tabs [role=tab]")];
+  const pick = (tab) => tabs.forEach((t) => {
+    const on = t === tab;
+    t.setAttribute("aria-selected", String(on)); t.tabIndex = on ? 0 : -1;
+    el(t.getAttribute("aria-controls")).hidden = !on;
+  });
+  tabs.forEach((tab, i) => {
+    tab.addEventListener("click", () => pick(tab));
+    tab.addEventListener("keydown", (e) => {
+      const step = { ArrowRight: 1, ArrowLeft: -1 }[e.key];
+      if (!step) return;
+      e.preventDefault();
+      const next = tabs[(i + step + tabs.length) % tabs.length];
+      pick(next); next.focus();
+    });
+  });
+}
+
+// Saves first, so the look sent is the one on screen.
+async function lookAction(method, path, message) {
+  clearTimeout(saveTimer);
+  el("look-state").textContent = "";
+  try {
+    await save();
+    const result = await api(path, method, { video_id: state.videoId, index: state.index });
+    el("look-state").textContent = message(result);
+  } catch (error) { showAlert(error.message); }
 }
 
 export function leaveEditor() {

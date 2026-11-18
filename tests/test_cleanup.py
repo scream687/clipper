@@ -88,7 +88,7 @@ def test_unfinished_videos_are_resumed_on_start(lib, monkeypatch):
 def test_export_all_zips_every_clip_that_is_not_discarded(lib, tmp_path):
     video = make_video(created_days_ago=1)
 
-    path = cleanup.export_all(video.id, handle="", log=lambda m: None)
+    path = cleanup.export_all(video.id, {"handle": "", "quality": 1, "fps": None}, log=lambda m: None)
 
     with zipfile.ZipFile(path) as z:
         names = z.namelist()
@@ -108,3 +108,26 @@ def test_temp_files_are_unique_per_process_and_stale_ones_are_swept(tmp_path):
     remove_stale_partials(tmp_path)
 
     assert not stale.exists() and mine.exists()
+
+
+def test_export_all_reuses_an_unchanged_render_and_redoes_a_changed_one(lib, monkeypatch):
+    video = make_video(created_days_ago=1)
+    calls = []
+    monkeypatch.setattr(cleanup, "render", lambda plan, source, out, log, **kw: calls.append(1) or out.write_bytes(b"mp4"))
+    options = {"handle": "", "quality": 1, "fps": None}
+    cleanup.export_all(video.id, options, log=lambda m: None)
+    library.save_clip(video.id, library.load_clip(video.id, 0))  # saved, nothing changed
+    cleanup.export_all(video.id, options, log=lambda m: None)
+    assert len(calls) == 1
+    library.save_clip(video.id, library.load_clip(video.id, 0).model_copy(update={"look": "karaoke"}))
+    cleanup.export_all(video.id, options, log=lambda m: None)
+    assert len(calls) == 2
+
+
+def test_export_all_takes_only_kept_clips_once_some_are_kept(lib, monkeypatch):
+    video = make_video(created_days_ago=1)
+    library.save_clip(video.id, Clip(index=2, first_word=13, last_word=20, status="kept", title="Kept"))
+    monkeypatch.setattr(cleanup, "render", lambda plan, source, out, log, **kw: out.write_bytes(b"mp4"))
+    path = cleanup.export_all(video.id, {"handle": "", "quality": 1, "fps": None}, log=lambda m: None)
+    with zipfile.ZipFile(path) as z:
+        assert [n for n in z.namelist() if n.endswith(".mp4")] == ["03 Kept.mp4"]

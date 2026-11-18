@@ -75,3 +75,29 @@ def loudness_clips(video: Video, min_s: float, max_s: float, max_clips: int) -> 
         if len(clips) >= max_clips:
             break
     return [c.model_copy(update={"index": n}) for n, c in enumerate(sorted(clips, key=lambda c: c.first_word))]
+
+
+def level_speech(source: Path, start: float, duration: float, target: Path, lufs: float = -14.0) -> Path:
+    """The speech of `duration` seconds of `source` from `start` as a levelled WAV: a gentle compressor evens the
+    voice, then loudnorm lands it at `lufs` with peaks held under -1.5 dBTP (a limiter). Audio preparation, the
+    way the preview copy is prepared: the clip itself is still put together by HyperFrames."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run([FFMPEG, "-v", "error", "-y", "-ss", f"{max(start, 0):.6f}", "-t", f"{duration:.6f}", "-i", str(source),
+                             "-vn", "-af", f"acompressor=threshold=-24dB:ratio=3:attack=10:release=200:makeup=2,"
+                             f"loudnorm=I={lufs}:TP=-1.5:LRA=9,aresample=48000", "-ac", "2", "-c:a", "pcm_s16le", str(target)],
+                            capture_output=True, text=True)
+    if result.returncode != 0 or not target.is_file():
+        raise RuntimeError(f"Could not level the speech: {result.stderr.strip()[-300:]}")
+    return target
+
+
+def integrated_lufs(source: Path, start: float, duration: float) -> tuple[float, float] | None:
+    """(integrated loudness in LUFS, true peak in dBTP) of `duration` seconds of `source` from `start`; None if it
+    cannot be measured."""
+    result = subprocess.run([FFMPEG, "-hide_banner", "-ss", f"{max(start, 0):.3f}", "-t", f"{duration:.3f}", "-i", str(source),
+                             "-vn", "-af", "ebur128=framelog=quiet:peak=true", "-f", "null", "-"], capture_output=True, text=True)
+    level = re.findall(r"^\s*I:\s+(-?[\d.]+) LUFS", result.stderr, re.M)
+    peak = re.findall(r"^\s*Peak:\s+(-?[\d.]+|-inf) dBFS", result.stderr, re.M)
+    if result.returncode != 0 or not level:
+        return None
+    return float(level[-1]), float(peak[-1]) if peak and peak[-1] != "-inf" else -60.0

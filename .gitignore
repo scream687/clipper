@@ -5,3 +5,11 @@ __pycache__/
 data/
 models/
 cookies.txt
+motion/node_modules/
+motion/out/
+*.png
+!web/**/*.png
+motion/public/arial-black.ttf
+motion/.claude/
+motion/.agents/
+motion/skills-lock.json

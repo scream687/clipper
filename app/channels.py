@@ -15,7 +15,7 @@ MAX_CHANNELS = 12
 _cache: dict[str, tuple[float, dict[str, Any]]] = {}  # ponytail: in-memory, refetched after a restart
 
 
-def clean_channels(lines: list[str]) -> list[str]:
+def clean_channels(lines: list[str], limit: int = MAX_CHANNELS) -> list[str]:
     """Accept '@handle', 'handle' or a youtube.com/@handle link; drop anything else and repeats."""
     out = []
     for line in lines:
@@ -24,7 +24,7 @@ def clean_channels(lines: list[str]) -> list[str]:
         handle = text if text.startswith("@") else f"@{text}"
         if HANDLE.match(handle) and handle.lower() not in {h.lower() for h in out}:
             out.append(handle)
-    return out[:MAX_CHANNELS]
+    return out[:limit]
 
 
 def _fetch(handle: str) -> dict[str, Any]:
