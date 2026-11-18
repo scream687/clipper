@@ -42,6 +42,14 @@ buffer (set "Live streams: last minutes" under the link box, 5 to 240) and finds
 waiting for the stream to end. Add the link again later to clip the next stretch. A running stream has no captions
 yet, so it is transcribed with Whisper.
 
+**Chat hype.** With "keep watching the chat" ticked (the default), Clipper also follows the stream's live chat.
+When the chat explodes (many different people reacting at once, at least twice its usual pace, with extra weight
+for 😂 / LOL / W / F and "clip it"), it waits 45 seconds for the reaction to play out, captures the last 2-5
+minutes, and clips that moment as its own video ("… · chat hype 21:42 (3.8x)"). It keeps watching until the
+stream ends or you press **Stop watching**; **Watch chat** on a live video starts it again. YouTube only serves a
+running stream's chat from now on, so the stretch captured when you paste the link has no chat signal; a
+finished stream's chat replay is read in full and its spikes lead the moment picking.
+
 ## What each clip gets without touching it
 
 - **Framing by kind of video**: the AI tells a talk, gameplay, show, vlog or stream apart. Gameplay never follows the
@@ -51,8 +59,8 @@ yet, so it is transcribed with Whisper.
 - **Sound design**: a whoosh into every cutaway and punch-in, a pop on emojis, a meme sound on the punchline, music
   ducked under the voice. Built-in sounds are generated (no licence questions); add your own in Settings by pasting a
   myinstants.com link (those can be copyright-claimed; **Safe sounds only** skips them).
-- **Captions and graphics** (HyperFrames, `web/overlay/`): the AI's key words pop in colour, the hook settles in, emojis
-  spring, a progress bar runs along the bottom. The editor previews the same page the export renders.
+- **Captions and graphics** (`app/ass.py` in the export, `web/overlay/` in the editor preview): caption groups
+  blur-pop in, the AI's key words pop in colour, the hook settles in, emojis, a progress bar along the top edge.
 - **B-roll and cards** (Remotion, `motion/`): a number or a name gets a card over the speaker's own frame; a concrete
   thing gets Pexels footage (free key in Settings; without one it becomes a card).
 
@@ -62,18 +70,21 @@ yet, so it is transcribed with Whisper.
   and videos without them go through Whisper (large-v3-turbo) on this Mac.
 - Moments are picked by the AI chosen in **Settings** (default: Claude through your Claude Code login,
   `claude -p` with plugins, hooks and MCP servers off). Long videos are read in 30-minute parts and the
-  candidates ranked against each other. Signals passed along: the replay graph, comments that quote or
-  timestamp a line, loud seconds, what India is searching, and your own 1-10 ratings of earlier clips.
+  candidates ranked against each other. Signals passed along: live chat spikes (streams; each spike is asked
+  for its own clip and ranks higher), the replay graph, comments that quote or timestamp a line, loud seconds,
+  what India is searching, and your own 1-10 ratings of earlier clips. The on-screen hook is the best of three
+  the AI writes, scored by the master-virality skill's `hookscore.py`.
 - A podcast's cold-open teaser (lines replayed later in the episode) is skipped, edges are snapped to whole
   sentences, and a clip that answers a question starts on the question. With no AI, clips fall back to
   the loudest moments.
 - **Search**: find a word, or describe a moment and the AI adds it as a clip. **Also ask OpusClip** imports
   OpusClip's picks (needs its API key).
 - One render plan (`app/plan.py`) drives both the browser preview and the export, so they match.
-- **Exports are rendered by HyperFrames** (`app/compose.py`): the whole clip is one composition, the cut source
-  framed by GSAP (face follow, punch-ins, whole frame on a canvas, split), Remotion's inserts, the captions layer, the
-  logo, and every sound (speech at -14 LUFS, bleeps, music ducked in steps, effects). ffmpeg builds nothing; it is only
-  used to download, transcribe, track faces, measure loudness and make posters.
+- **Exports are rendered by ffmpeg** (`app/render.py`), one command per clip, in seconds: frame-exact cuts, the
+  framing (face follow, whole frame on a canvas, facecam split) with punch-ins and a small settle on every cut as one
+  per-frame crop, a light grade and vignette, Remotion's inserts, the post header, ASS captions (`app/ass.py`),
+  emojis, logo, progress bar, and every sound (speech levelled to -14 LUFS, bleeps, music ducked under the voice by a
+  sidechain with its riser, effects), encoded on the Mac's hardware H.264 encoder.
 - Full videos are deleted 14 days after they were added; each clip keeps ±30 s around it, so clips stay
   editable and exportable afterwards.
 - A server restart resumes unfinished analysis without re-downloading.
@@ -82,8 +93,12 @@ yet, so it is transcribed with Whisper.
 
 - `brew install ffmpeg-full` (analysis: proxies, loudness, face tracking, posters) and `brew install whisper-cpp`
 - `uv`, Deno on `PATH` (yt-dlp uses it), and the `claude` CLI logged in
-- Node 22+ (`npx`): HyperFrames renders every export; `cd motion && npm install` once for the Remotion inserts.
-- Optional: `cookies.txt` in the project root, only if YouTube starts demanding sign-in
+- Optional: Node 22+ and `cd motion && npm install` once, for the Remotion B-roll inserts (without them, clips
+  simply have no inserts).
+- Optional: `cookies.txt` in the project root, only if YouTube starts demanding sign-in ("Sign in to confirm
+  you're not a bot"). Make it from the browser you are signed in to YouTube with (Chrome here; also `safari`,
+  `firefox`, `brave`), then press **Watch chat** again:
+  `uv run yt-dlp --cookies-from-browser chrome --cookies cookies.txt --skip-download "https://youtu.be/dQw4w9WgXcQ"`
 
 ## Check it works
 

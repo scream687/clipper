@@ -1,4 +1,4 @@
-"""Exports are rendered by HyperFrames (app/compose.py + app/render.py). These render for real, so they need Node."""
+"""Exports are rendered by ffmpeg (app/render.py, captions from app/ass.py). These render for real."""
 
 import json
 import shutil
@@ -6,13 +6,12 @@ import subprocess
 
 import pytest
 
-from app import FFMPEG, FFPROBE, compose
+from app import FFMPEG, FFPROBE
 from app.model import Clip, CropKey, Video, Word
 from app.plan import build_plan
 from app.render import render
 
 FPS = 25.0
-pytestmark = pytest.mark.skipif(shutil.which("npx") is None, reason="exports are rendered by HyperFrames, which needs Node")
 
 
 @pytest.fixture(scope="module")
@@ -53,7 +52,13 @@ def assert_exact(plan, out):
     assert abs(float(a["duration"]) - plan.duration) < 0.06
 
 
-def test_cuts_land_on_the_source_frames_within_one_frame(source, tmp_path):
+def test_cuts_land_on_the_source_frames_exactly(source, tmp_path, monkeypatch):
+    from PIL import Image
+    from app import render as renderer
+    clear = tmp_path / "clear.png"
+    Image.new("RGBA", (1080, 1920), (0, 0, 0, 0)).save(clear)
+    monkeypatch.setattr(renderer, "GRADE", "null")                 # the grade and vignette shift the red code
+    monkeypatch.setattr(renderer, "_shade", lambda w, h: clear)
     clip = Clip(index=0, first_word=0, last_word=17, cut_word_ids=[3, 4, 9, 14], hook="A hook", swear_filter=True,
                 auto_keys=[CropKey(t=1.0, cx=0.1), CropKey(t=9.0, cx=0.9)], emoji_words={2: "🔥"}, emphasis_words=[6])
     plan = build_plan(video(), clip, handle="@me")
@@ -62,11 +67,11 @@ def test_cuts_land_on_the_source_frames_within_one_frame(source, tmp_path):
     codes = {n: red_at(source, n, 40, 400) for n in range(10)}  # decoded the same way: colour-range safe
     code = lambda v: min(codes, key=lambda n: abs(codes[n] - v))
     cursor = 0
-    for seg in plan.segments:  # every kept run plays its own source frames (HyperFrames may be one frame late at a cut)
+    for seg in plan.segments:  # every kept run plays exactly its own source frames
         n = seg.end_frame - seg.start_frame
         for i in (0, 1, n // 2, n - 2, n - 1):
             got, want = code(red_at(out, cursor + i, 40, 900)), (seg.start_frame + i) % 10
-            assert (got - want) % 10 in (0, 1), (cursor + i, seg.start_frame + i, got)
+            assert got == want, (cursor + i, seg.start_frame + i, got)
         cursor += n
 
 
@@ -128,5 +133,5 @@ def test_a_deleted_music_track_is_reported_clearly(source, tmp_path, monkeypatch
 
 def test_a_missing_source_is_reported_clearly(tmp_path):
     plan = build_plan(video(), Clip(index=0, first_word=0, last_word=3))
-    with pytest.raises(RuntimeError, match="HyperFrames"):
+    with pytest.raises(RuntimeError, match="missing"):
         render(plan, tmp_path / "missing.mp4", tmp_path / "out.mp4", log=lambda m: None)

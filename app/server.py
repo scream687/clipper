@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
-from app import FFMPEG, ROOT, SETTINGS_FILE, ai, assets, channels, cleanup, house, library, opusclip, queue, sfx, trends
+from app import FFMPEG, ROOT, SETTINGS_FILE, ai, assets, channels, cleanup, house, library, opusclip, queue, sfx, trends, watch
 from app.model import HEX_COLOUR, Background, Clip, CropKey, FramingMode, Look, Shape, UnitFloat, Video
 from app.emoji import is_emoji
 from app.moments import clean_hashtags, find_clips
@@ -42,6 +42,8 @@ SECURITY_HEADERS = {
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     cleanup.resume_unfinished(_analyse_job)  # finish analyses a restart interrupted
+    for video_id in watch.to_resume():  # keep watching streams' chat across restarts (ends at once if one is over)
+        _start_watch(video_id)
     cleanup.start_cleanup_timer()
     yield
 
@@ -260,6 +262,7 @@ class NewVideo(BaseModel):
     max_s: int = Field(default=60, ge=10, le=600)
     direction: str = Field(default="", max_length=1000)
     live_minutes: int = Field(default=30, ge=5, le=240)  # live streams: how far back to capture from now
+    watch_chat: bool = True  # live streams: keep watching the chat and clip every moment it explodes
 
     @field_validator("url")
     @classmethod
@@ -281,7 +284,20 @@ def _summary(video: Video) -> dict[str, Any]:
     return {"id": video.id, "title": video.title, "channel": video.channel, "url": video.url,
             "duration": video.duration, "stage": video.stage, "error": video.error, "shape": video.shape,
             "created_at": video.created_at, "clip_count": len(clips),
-            "kept": sum(1 for c in clips if c.status == "kept"), "job": job["id"] if job else None}
+            "kept": sum(1 for c in clips if c.status == "kept"), "job": job["id"] if job else None,
+            "live": bool(video.options.get("live")), "watching": _watch_status(video.id)}
+
+
+def _watch_status(video_id: str) -> str | None:
+    """The watcher's latest line while it follows this stream's chat, else None."""
+    job = queue.active_for(f"{video_id}/watch")
+    return (job["log"][-1] if job["log"] else "Starting to watch the chat") if job else None
+
+
+def _start_watch(video_id: str) -> str:
+    on_capture = lambda child_id: queue.submit("analysis", "analyse", child_id, _analyse_job(child_id))
+    return queue.submit(f"watch-{video_id}", "watch", f"{video_id}/watch",
+                        lambda log: watch.watch(video_id, on_capture, log))
 
 
 def _analyse_job(video_id: str):
@@ -296,9 +312,28 @@ def list_videos() -> list[dict[str, Any]]:
 @app.post("/api/videos")
 def add_video(body: NewVideo) -> dict[str, Any]:
     video = create_from_youtube(body.url, {"max_clips": body.max_clips, "min_s": body.min_s, "max_s": body.max_s,
-                                           "direction": body.direction.strip(), "live_s": body.live_minutes * 60}, body.shape)
+                                           "direction": body.direction.strip(), "live_s": body.live_minutes * 60,
+                                           "watch_chat": body.watch_chat}, body.shape)
     job = queue.submit("analysis", "analyse", video.id, _analyse_job(video.id))
+    if body.watch_chat:  # ends at once (with a note) when the link is not a running stream
+        _start_watch(video.id)
     return {"id": video.id, "job": job}
+
+
+@app.post("/api/videos/{video_id}/watch")
+def start_watch(video_id: str) -> dict[str, Any]:
+    video = get_video_or_404(video_id)
+    if not video.url:
+        raise HTTPException(422, "Only YouTube streams have a live chat to watch.")
+    if _watch_status(video_id) is not None:
+        raise HTTPException(409, "Already watching this stream's chat.")
+    return {"job": _start_watch(video_id)}
+
+
+@app.delete("/api/videos/{video_id}/watch")
+def stop_watch(video_id: str) -> dict[str, Any]:
+    get_video_or_404(video_id)
+    return {"stopped": watch.stop(video_id)}
 
 
 UPLOAD_TYPES = {".mp4", ".mov", ".m4v", ".mkv", ".webm"}

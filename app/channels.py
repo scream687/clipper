@@ -5,7 +5,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from app.youtube import _options
+from app.youtube import _options, signed_in
 
 DEFAULT_CHANNELS = ["@rajshamani", "@BeerBiceps"]
 HANDLE = re.compile(r"^@[A-Za-z0-9._-]{3,60}$")
@@ -27,6 +27,7 @@ def clean_channels(lines: list[str], limit: int = MAX_CHANNELS) -> list[str]:
     return out[:limit]
 
 
+@signed_in
 def _fetch(handle: str) -> dict[str, Any]:
     import yt_dlp
 

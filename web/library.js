@@ -8,6 +8,7 @@ let timer = null;
 export function wireLibrary() {
   el("add-form").addEventListener("submit", addVideo);
   el("video-list").addEventListener("click", deleteVideo);
+  el("video-list").addEventListener("click", toggleWatch);
   el("watch-list").addEventListener("click", addWatched);
   el("trending-list").addEventListener("click", addWatched);
 }
@@ -74,7 +75,8 @@ async function addWatched(event) {
   button.disabled = true; button.textContent = "Adding…";
   try {
     const { id } = await api("/api/videos", "POST", { url: button.dataset.url, shape: f.shape.value, max_clips: Number(f.max_clips.value),
-      min_s: Number(f.min_s.value), max_s: Number(f.max_s.value), direction: f.direction.value.trim(), live_minutes: Number(f.live_minutes.value) });
+      min_s: Number(f.min_s.value), max_s: Number(f.max_s.value), direction: f.direction.value.trim(), live_minutes: Number(f.live_minutes.value),
+      watch_chat: f.watch_chat.checked });
     location.hash = `#/video/${id}`;
   } catch (error) { showAlert(error.message); button.disabled = false; button.textContent = "Find clips"; }
 }
@@ -87,7 +89,7 @@ async function refresh() {
   try { videos = await api("/api/videos"); } catch (error) { showAlert(error.message); return; }
   el("library-empty").hidden = videos.length > 0;
   el("video-list").replaceChildren(...videos.map(row));
-  if (videos.some((v) => v.job)) timer = setTimeout(refresh, POLL_MS);
+  if (videos.some((v) => v.job || v.watching)) timer = setTimeout(refresh, POLL_MS);
 }
 
 function row(video) {
@@ -106,10 +108,18 @@ function row(video) {
     stateEl.textContent = video.stage === "new" || video.stage === "queued" ? "Waiting…" : `${video.stage}…`;
     stateEl.classList.add("is-busy");
   }
+  const watch = node.querySelector(".video-watch");
+  watch.dataset.id = video.id;
+  if (video.watching) {
+    stateEl.textContent = video.watching; stateEl.className = "video-state is-busy";
+    watch.textContent = "Stop watching"; watch.dataset.action = "stop"; watch.hidden = false;
+  } else if (video.live && video.stage === "ready") {
+    watch.textContent = "Watch chat"; watch.dataset.action = "start"; watch.hidden = false;
+  }
   const del = node.querySelector(".video-delete");
   del.dataset.id = video.id;
   del.dataset.title = video.title;
-  del.hidden = Boolean(video.job);
+  del.hidden = Boolean(video.job || video.watching);
   return node;
 }
 
@@ -124,7 +134,7 @@ async function addVideo(event) {
     const options = { shape: f.shape.value, max_clips: Number(f.max_clips.value), min_s: Number(f.min_s.value),
                       max_s: Number(f.max_s.value), direction: f.direction.value.trim(), live_minutes: Number(f.live_minutes.value) };
     let id;
-    if (file) {
+    if (file) {  // an upload has no live chat
       el("add-button").textContent = "Uploading…";
       const form = new FormData();
       form.append("file", file);
@@ -135,11 +145,21 @@ async function addVideo(event) {
       if (!response.ok) throw new Error(typeof body.detail === "string" ? body.detail : "The upload failed.");
       id = body.id;
     } else {
-      ({ id } = await api("/api/videos", "POST", { url: f.url.value.trim(), ...options }));
+      ({ id } = await api("/api/videos", "POST", { url: f.url.value.trim(), ...options, watch_chat: f.watch_chat.checked }));
     }
     f.url.value = ""; f.direction.value = ""; f.file.value = "";
     location.hash = `#/video/${id}`;
   } catch (error) { showAlert(error.message); } finally { el("add-button").disabled = false; el("add-button").textContent = "Find clips"; }
+}
+
+async function toggleWatch(event) {
+  const button = event.target.closest(".video-watch");
+  if (!button) return;
+  button.disabled = true;
+  try {
+    await api(`/api/videos/${button.dataset.id}/watch`, button.dataset.action === "stop" ? "DELETE" : "POST");
+    await refresh();
+  } catch (error) { showAlert(error.message); button.disabled = false; }
 }
 
 async function deleteVideo(event) {

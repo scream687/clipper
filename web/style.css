@@ -308,7 +308,7 @@ kbd { display: inline-block; min-width: 1.4em; padding: 0 0.3em; border: 1px sol
   .link-bar { grid-template-columns: minmax(0, 1fr) auto; }
   .add-options { grid-template-columns: auto repeat(3, minmax(0, 8rem)); }
   .add-options .segmented { grid-column: auto; }
-  .video-row { grid-template-columns: minmax(0, 1fr) auto auto; }
+  .video-row { grid-template-columns: minmax(0, 1fr) auto auto auto; }
   .video-link { grid-column: auto; }
 }
 @media (min-width: 64rem) {

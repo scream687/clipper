@@ -32,6 +32,8 @@ def tighten(video: Video, clip: Clip) -> Clip:
     """The clip with its fillers cut (added to any cuts already there), if its pacing is on."""
     if not clip.tighten:
         return clip
+    if video.content in ("gameplay", "stream"):  # the pauses are the gameplay the clip is about: keep them whole
+        return clip.model_copy(update={"tighten": False})
     cuts = sorted(set(clip.cut_word_ids) | set(filler_cuts(video, clip)))
     span = clip.last_word - clip.first_word + 1
     return clip if len(cuts) >= span else clip.model_copy(update={"cut_word_ids": cuts})

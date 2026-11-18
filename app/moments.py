@@ -5,7 +5,9 @@ from typing import Callable
 
 from app.ai import AIError, AIUnavailable
 from app.model import Clip, Video, Word
+from app.chat import REACTION_MAX_S, chat_note, hype_at
 from app.comments import comment_note, mentions_in
+from app.hooks import best_hook
 from app.quotes import STOP, tokens
 from app.retention import pick_peaks, score_range
 from app.sentences import split_sentences
@@ -24,10 +26,11 @@ SCHEMA = {
         "type": "object",
         "properties": {
             "first_sentence": {"type": "integer"}, "last_sentence": {"type": "integer"},
-            "title": {"type": "string"}, "hook": {"type": "string"}, "description": {"type": "string"}, "hashtags": {"type": "string"},
+            "title": {"type": "string"}, "hooks": {"type": "array", "items": {"type": "string"}, "maxItems": 3},
+            "description": {"type": "string"}, "hashtags": {"type": "string"},
             "score": {"type": "integer", "minimum": 1, "maximum": 10},
         },
-        "required": ["first_sentence", "last_sentence", "title", "hook", "description", "hashtags", "score"],
+        "required": ["first_sentence", "last_sentence", "title", "hooks", "description", "hashtags", "score"],
         "additionalProperties": False}}},
     "required": ["moments"], "additionalProperties": False,
 }
@@ -59,6 +62,14 @@ def build_prompt(video: Video, sentences: list[list[Word]], min_s: int, max_s: i
         replay = ("\nViewers replay these moments most (YouTube 'Most replayed'): "
                   + ", ".join(f"{_clock(p['time'])} ({p['value']:.2f})" for p in peaks)
                   + ". Prefer segments containing them when the content is strong.\n")
+    if video.chat_peaks:
+        replay += ("\nTHE LIVE CHAT EXPLODED at these times (the strongest sign of a viral clip in a stream). What caused "
+                   "it happened 10-40 seconds before each time: viewers watch behind live and need time to type.\n"
+                   + chat_note(video.chat_peaks) + "\n"
+                   "Sentences marked (CHAT HYPE) are that stretch before a spike: find what the chat reacted to in it "
+                   "(often the streamer's loudest line, or words the chat repeats). Give every spike in this part its "
+                   "own moment, built so the clip sets up what happens and ends right after it, unless the transcript "
+                   "there is truly unusable. Score them higher than moments without chat hype.\n")
     comments = comment_note(video.comments)
     if comments:
         replay += ("\nWhat viewers said (treat timestamp mentions as strong evidence of a great moment, and use liked "
@@ -74,7 +85,8 @@ def build_prompt(video: Video, sentences: list[list[Word]], min_s: int, max_s: i
     steer = f"\nUSER DIRECTION (highest priority, follow it): {direction.strip()}\n" if direction.strip() else ""
     loud = set(video.loud)
     is_loud = lambda s: any(t in loud for t in range(int(s[0].start), int(s[-1].end) + 1))
-    lines = [f"[s{i} {_clock(s[0].start)}]{' (LOUD)' if is_loud(s) else ''} {' '.join(w.display for w in s)}"
+    hype = lambda s: " (CHAT HYPE)" if hype_at(video.chat_peaks, s[0].start, s[-1].end) else ""
+    lines = [f"[s{i} {_clock(s[0].start)}]{hype(s)}{' (LOUD)' if is_loud(s) else ''} {' '.join(w.display for w in s)}"
              for i, s in enumerate(sentences, start=first_id)]
     if loud:
         replay += ("\n(LOUD) marks sentences where the audio got much louder than usual: laughing, shouting, "
@@ -89,11 +101,16 @@ def build_prompt(video: Video, sentences: list[list[Word]], min_s: int, max_s: i
         f"Each moment should run {min_s}-{max_s} seconds; use the sentence timestamps to judge length. "
         "Never pick overlapping moments or near-duplicates.\n"
         "Return sentence ids: first_sentence and last_sentence are the numbers after 's'.\n"
-        "Write title (max 60 characters), hook (max 12 words, shown on screen for the first seconds) and "
+        "Write title (max 60 characters), hooks and "
         "description (max 150 characters) in the language and script the transcript uses; if it is "
         "Hindi or Hinglish, write in Roman letters (Hinglish as people text it). hashtags: 3-6 hashtags for the post, "
         "space separated, mixing the specific topic, the speaker or show, and one or two broad discovery tags; "
-        "Roman letters only. score is 1-10, spread honestly.\n\n"
+        "Roman letters only. score is 1-10, spread honestly.\n"
+        "hooks: 3 different on-screen hook lines for the first seconds (5-12 words each, same language rule), each "
+        "a different angle: the concrete payoff first (a number, money, time saved or lost) when the clip has one, "
+        "a question the clip answers, the bold claim. Lead with the payoff inside the first words; never invent a "
+        "number, name or result that is not said in the clip; no greetings or preamble. The strongest one is "
+        "picked by a hook scorer.\n\n"
         "Transcript:\n" + "\n".join(lines)
     )
 
@@ -119,7 +136,12 @@ def moments_to_clips(video: Video, sentences: list[list[Word]], moments: list[di
                      max_clips: int, shape: str) -> list[Clip]:
     clips: list[Clip] = []
     taken: list[tuple[float, float]] = []
-    for moment in sorted(moments, key=lambda m: -m["score"]):
+    def boosted(m: dict) -> int:  # a moment the live chat exploded over outranks an equal one it did not
+        ok = 0 <= m["first_sentence"] <= m["last_sentence"] < len(sentences)
+        hype = ok and hype_at(video.chat_peaks, sentences[m["first_sentence"]][0].start, sentences[m["last_sentence"]][-1].end)
+        return min(m["score"] + (1 if hype else 0), 10)
+
+    for moment in sorted(moments, key=lambda m: -boosted(m)):
         first, last = moment["first_sentence"], moment["last_sentence"]
         if not (0 <= first <= last < len(sentences)):
             continue
@@ -130,7 +152,7 @@ def moments_to_clips(video: Video, sentences: list[list[Word]], moments: list[di
         taken.append((start, end))
         clips.append(Clip(index=len(clips), first_word=sentences[first][0].id, last_word=sentences[last][-1].id,
                           shape=shape, title=moment["title"].strip()[:80], hook=moment["hook"].strip(),
-                          description=moment["description"].strip(), score=moment["score"],
+                          description=moment["description"].strip(), score=boosted(moment),
                           hashtags=clean_hashtags(moment.get("hashtags", "")),
                           retention=score_range(video.heatmap, start, end),
                           mentions=mentions_in(video.comments, start, end) if video.comments else None))
@@ -313,12 +335,14 @@ def build_rank_prompt(video: Video, sentences: list[list[Word]], moments: list[d
         signals = [f"{mentions_in(video.comments, start, end)} comments point here"] if video.comments else []
         if video.heatmap:
             signals.append(f"replay {score_range(video.heatmap, start, end):.1f}x")
+        if (x := hype_at(video.chat_peaks, start, end)) is not None:
+            signals.append(f"live chat exploded {x}x")
         blocks.append(f"[{n}] {_clock(start)} \"{m['title']}\" hook: {m['hook']} | {', '.join(signals)}\n{text}")
     steer = f"\nUSER DIRECTION (highest priority): {direction.strip()}\n" if direction.strip() else ""
     return (f"Video: {video.title}\n{steer}\nThese candidate Shorts were picked from different parts of the video. "
             "Score every one 1-10 against the others, as the editor deciding which to post first: hook strength in "
             "the first 3 seconds, a complete payoff, emotion or surprise, how well it stands alone, and how much viewers "
-            "reacted (comments, replays). Use the whole scale; at most a quarter of them may get 9 or 10.\n\n"
+            "reacted (live chat explosions count most, then comments and replays). Use the whole scale; at most a quarter of them may get 9 or 10.\n\n"
             + "\n\n".join(blocks))
 
 
@@ -389,7 +413,8 @@ def find_clips(video: Video, ask: AskFn, min_s: int = DEFAULT_MIN_S, max_s: int 
             found = ask(prompt, SCHEMA, SYSTEM).get("moments", [])
         except AIError:
             return []  # one bad part must not lose the others
-        return [m for m in found if first <= m.get("first_sentence", -1) <= m.get("last_sentence", -1) <= last]
+        return [{**m, "hook": best_hook(m.get("hooks") or [m.get("hook", "")])} for m in found
+                if first <= m.get("first_sentence", -1) <= m.get("last_sentence", -1) <= last]
 
     with ThreadPoolExecutor(max_workers=PARALLEL_PARTS) as pool:
         moments = [m for batch in pool.map(pick, enumerate(parts)) for m in batch]
@@ -399,3 +424,77 @@ def find_clips(video: Video, ask: AskFn, min_s: int = DEFAULT_MIN_S, max_s: int 
     if not clips:
         raise RuntimeError("The AI did not return any usable moments for this video.")
     return refine_edges(video, clips, ask, min_s, max_s)
+
+
+BOOM_BEFORE_S = 60  # a chat-boom clip opens this long before the boom: up to REACTION_MAX_S of chat delay + setup
+BOOM_SETUP_S = 30   # ...or this long before the line the chat echoes
+BOOM_REACT_S = 8    # ...and runs this long past the boom
+BOOM_MIN_S = 35     # shorter than this, a viewer cannot tell what happened: reach further back
+BOOM_MAX_S = 90
+BOOM_SCHEMA = {
+    "type": "object",
+    "properties": {"title": {"type": "string"}, "hooks": {"type": "array", "items": {"type": "string"}, "maxItems": 3},
+                   "description": {"type": "string"}, "hashtags": {"type": "string"}},
+    "required": ["title", "hooks", "description", "hashtags"], "additionalProperties": False,
+}
+
+
+def _echo(video: Video, peak: dict, after: float, before: float) -> float | None:
+    """When the chat repeats the streamer's words ('L GTA 6'), the last time he said one of them in after..before."""
+    said = {t for text in peak.get("sample", []) for t in tokens(text.lower()) if t not in STOP}
+    hits = [w.start for w in video.words if after <= w.start <= before and set(tokens(w.display.lower())) & said]
+    return max(hits) if hits else None
+
+
+def boom_window(video: Video, peak: dict, max_s: float) -> tuple[int, int] | None:
+    """First and last word ids of the clip around one chat boom: whole sentences from BOOM_BEFORE_S before the chat
+    boomed (its cause is in there, with the setup) to BOOM_REACT_S after, or from BOOM_SETUP_S before the line the chat
+    echoes; at least BOOM_MIN_S and at most max(max_s, BOOM_MAX_S) long. None when nobody speaks. Pure, unit-tested."""
+    at = peak.get("chat_at", peak["time"])
+    start, end = at - BOOM_BEFORE_S, at + BOOM_REACT_S
+    if (echo := _echo(video, peak, at - REACTION_MAX_S - 5, at)) is not None:
+        start = echo - BOOM_SETUP_S
+    every = [s for s in split_sentences(video.words) if s[0].start < end]
+    sentences = [s for s in every if s[-1].end > start]
+    if not sentences:
+        return None
+    before = every[:len(every) - len(sentences)]
+    while before and sentences[-1][-1].end - sentences[0][0].start < BOOM_MIN_S:  # quiet gameplay: more context
+        sentences.insert(0, before.pop())
+    cap = max(max_s, BOOM_MAX_S)
+    while len(sentences) > 1 and sentences[-1][-1].end - sentences[0][0].start > cap:
+        sentences = sentences[1:]  # the cause sits nearer the boom than the far start: trim from the front
+    return sentences[0][0].id, sentences[-1][-1].id
+
+
+def build_boom_prompt(video: Video, words: list[Word], peak: dict) -> str:
+    said = ", ".join(peak.get("sample", [])[:4]) or "reactions"
+    return (f"Stream: {video.title}\nChannel: {video.channel}\n"
+            f"The live chat exploded ({peak['x']}x its usual pace, writing: {said}) at this moment. What the streamer "
+            "said around it, word for word:\n" + " ".join(w.display for w in words) + "\n\n"
+            "Write title (max 60 characters), hooks (3 on-screen lines of 5-12 words, different angles), description "
+            "(max 150 characters) and hashtags (3-6, Roman letters) for this Short. Use ONLY what is said above and "
+            "the chat's reaction: never invent an event, number, name or result. If the words do not say what "
+            "happened, describe the reaction (e.g. 'Chat lost it when...') instead of guessing. Write in the "
+            "language and script the streamer uses; Hindi or Hinglish in Roman letters.")
+
+
+def clips_at_booms(video: Video, ask: AskFn, max_s: float, log: Callable[[str], None] = lambda m: None) -> list[Clip]:
+    """One clip per chat boom, cut by the boom itself; the AI only names it."""
+    by_id = {w.id: w for w in video.words}
+    clips = []
+    for peak in sorted(video.chat_peaks, key=lambda p: -p["x"]):
+        window = boom_window(video, peak, max_s)
+        if window is None:
+            log(f"Nobody speaks around the chat boom at {_clock(peak['time'])}; skipped")
+            continue
+        words = [by_id[i] for i in range(window[0], window[1] + 1) if i in by_id]
+        try:
+            meta = ask(build_boom_prompt(video, words, peak), BOOM_SCHEMA, SYSTEM)
+        except (AIUnavailable, AIError):
+            meta = {"title": f"Chat lost it: {', '.join(peak.get('sample', [])[:2])}"[:60], "hooks": [], "description": "", "hashtags": ""}
+        hook = best_hook(meta.get("hooks") or [])
+        clips.append(Clip(index=len(clips), first_word=window[0], last_word=window[1], shape=video.shape,
+                          title=(meta.get("title") or "").strip()[:80], hook=hook, description=(meta.get("description") or "").strip(),
+                          hashtags=clean_hashtags(meta.get("hashtags", "")), score=min(10, round(5 + peak["x"]))))
+    return clips

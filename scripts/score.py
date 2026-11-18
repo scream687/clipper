@@ -101,7 +101,7 @@ def check(video, clip, out_dir: Path) -> dict:
         "pacing_gaps": max(gaps, default=0) <= MAX_GAP_S or not clip.tighten,
         "no_fillers": not fillers,
         "keeps_moving": game or still <= MAX_STILL_S,
-        "text_layer": (out_dir / "clip" / "index.html").is_file(),
+        "text_layer": (out_dir / "captions.ass").is_file(),
         "emphasis": len(plan.emphasis) >= 2,
         "visuals": video.content not in ("talk", "vlog") or bool(plan.inserts),  # B-roll over a comedy set or a game is wrong
         "sound": bool(plan.sfx),

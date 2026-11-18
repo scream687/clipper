@@ -21,10 +21,22 @@ LogFn = Callable[[str], None]
 HINGLISH_PROMPT = "हाँ तो आज हम बात करेंगे health के बारे में, ये generation कितना healthy है? मुझे लगता है कि लोग अब aware हो रहे हैं।"
 
 
+LOOP_DISTINCT = 0.35   # a segment of 12+ words with fewer distinct words than this share is Whisper looping
+SPARSE_S, SPARSE_WPS = 15.0, 0.25  # ...and a long segment with almost no words is noise it made words out of
+
+
+def invented(words: list[str], seconds: float) -> bool:
+    """Whisper's loops over music, game sound or silence ('ek min dekho' x13, 'jhaal jhaal' for 30 s). Pure."""
+    if len(words) >= 12 and len(set(words)) / len(words) <= LOOP_DISTINCT:  # real "no bro, no bro" stays
+        return True
+    return seconds >= SPARSE_S and len(words) / seconds < SPARSE_WPS
+
+
 def words_from_whisper_json(path: Path) -> list[dict]:
     data = json.loads(path.read_bytes().decode("utf-8", errors="surrogateescape"))
-    pieces: list[tuple[bytes, float]] = []  # (bytes, start seconds)
+    words: list[dict] = []
     for segment in data.get("transcription", []):
+        pieces: list[tuple[bytes, float]] = []  # (bytes, start seconds)
         for tok in segment.get("tokens", []):
             raw = tok.get("text", "").encode("utf-8", errors="surrogateescape")
             if not raw or raw.startswith(b"[_"):
@@ -32,18 +44,23 @@ def words_from_whisper_json(path: Path) -> list[dict]:
             dtw = tok.get("t_dtw", -1)
             start = dtw / 100 if isinstance(dtw, (int, float)) and dtw >= 0 else tok["offsets"]["from"] / 1000
             pieces.append((raw, start))
-
-    words: list[dict] = []
-    current, current_start = b"", 0.0
-    for raw, start in pieces:
-        if raw.startswith(b" ") and current.strip():
-            words.append({"bytes": current, "start": current_start})
-            current = b""
-        if not current.strip():
-            current_start = start
-        current += raw
-    if current.strip():
-        words.append({"bytes": current, "start": current_start})
+        found: list[dict] = []
+        current, current_start = b"", 0.0
+        for raw, start in pieces:
+            if raw.startswith(b" ") and current.strip():
+                found.append({"bytes": current, "start": current_start})
+                current = b""
+            if not current.strip():
+                current_start = start
+            current += raw
+        if current.strip():
+            found.append({"bytes": current, "start": current_start})
+        texts = [w["bytes"].decode("utf-8", errors="replace").strip() for w in found]
+        offsets = segment.get("offsets", {})
+        seconds = (offsets.get("to", 0) - offsets.get("from", 0)) / 1000
+        if invented([t.strip(",.!?।") for t in texts if t], seconds):
+            continue
+        words += found
 
     result = []
     for i, w in enumerate(words):
@@ -65,7 +82,7 @@ def extract_audio(source: Path, wav: Path) -> Path:
     return wav
 
 
-def transcribe(source: Path, work: Path, language: str, log: LogFn) -> list[dict]:
+def transcribe(source: Path, work: Path, language: str, log: LogFn, vad: bool = True) -> list[dict]:
     whisper = shutil.which("whisper-cli")
     if not whisper:
         raise RuntimeError("whisper-cli is not installed (brew install whisper-cpp).")
@@ -79,7 +96,9 @@ def transcribe(source: Path, work: Path, language: str, log: LogFn) -> list[dict
            "-dtw", "large.v3.turbo", "-t", "8", "-mc", "0", "-np", "-pp"]
     if language == "hi":  # a Hinglish prompt keeps turbo transcribing instead of translating to English
         cmd += ["--prompt", HINGLISH_PROMPT]
-    if VAD_MODEL.exists():
+    # whisper.cpp leaves word times in its silence-removed timeline when VAD is on, so a long stretch of game sound
+    # and dialogue (a stream) gets words seconds early; streams go without it and lean on invented() instead
+    if vad and VAD_MODEL.exists():
         cmd += ["--vad", "-vm", str(VAD_MODEL)]
     log(f"Transcribing with Whisper ({language})")
     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")

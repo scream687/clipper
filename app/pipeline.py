@@ -14,11 +14,12 @@ from app.house import classify, saved_look, with_look
 from app.pacing import tighten
 from app.edits import decorate
 from app.loudness import loud_seconds, loudness_clips, measure as measure_loudness
+from app.chat import fetch_replay_peaks
 from app.comments import fetch_comments, keep_for_ai, match_quotes
 from app.framing import WIDE_SHOT_TILES, WIDE_SHOT_WIDTH, auto_framing, find_facecam
 from app.media import make_proxy, normalise_upload, probe, remove_stale_partials
 from app.model import Clip, Video, Word
-from app.moments import find_clips
+from app.moments import clips_at_booms, find_clips
 from app.taste import taste_note
 from app.trends import current_note
 from app.transcribe import transcribe
@@ -28,7 +29,8 @@ from app.youtube import (LIVE_WINDOW_S, download_caption_words, download_live_wi
                          find_orig_caption_code, has_word_timing)
 
 LogFn = Callable[[str], None]
-_BACKGROUND = ThreadPoolExecutor(max_workers=2)  # comment reads run beside the download
+_BACKGROUND = ThreadPoolExecutor(max_workers=2)  # comment and chat reads run beside the download
+CHAT_WAIT_S = 900  # a long stream's chat replay takes minutes to download; past this, clip without it
 FRAMING_MARGIN_S = 10.0  # frame a little beyond the clip so trimming outward still has face data
 
 
@@ -64,7 +66,8 @@ def _transcript(video: Video, source, folder, log: LogFn) -> list[dict]:
         if has_word_timing(raw):
             return raw
         log("YouTube only has line-level captions here; using Whisper instead")
-    return transcribe(source, folder / "work", (video.language or "hi").split("-")[0], log)
+    return transcribe(source, folder / "work", (video.language or "hi").split("-")[0], log,
+                      vad=not video.options.get("live"))
 
 
 def _window(video: Video, clip: Clip) -> tuple[float, float]:
@@ -174,9 +177,16 @@ def analyse(video_id: str, log: LogFn) -> Video:
             video = video.model_copy(update={
                 "title": title, "channel": info.get("channel") or info.get("uploader") or "",
                 "duration": float(info.get("duration") or 0), "heatmap": list(info.get("heatmap") or []),
-                "language": (code or info.get("language") or "en").split("-")[0],
-                "options": {**video.options, "caption_code": code, "live": live, "comments_read": live or video.options.get("comments_read", False)}})
+                # a running stream has no language from YouTube; Whisper in English mode would translate a Hindi
+                # streamer instead of writing down what they say, and Hindi mode keeps their English lines as said
+                "language": (code or info.get("language") or ("hi" if live else "en")).split("-")[0],
+                "options": {**video.options, "caption_code": code, "live": live, "comments_read": live or video.options.get("comments_read", False),
+                            # a finished stream keeps its chat as a replay; a running one only has chat from now on (watch.py)
+                            "chat_read": live or "live_chat" not in (info.get("subtitles") or {})}})
             library.save_video(video)
+            if live and video.options.get("watch_chat"):  # clips come from the chat's booms (watch.py), not the backlog
+                log("Live stream: clips are made each time the chat booms; nothing to clip from the backlog")
+                return _stage(video, "ready", log)
             if live:  # captured now, while it runs: the window ends at this moment
                 video = _stage(video, "Capturing the live stream", log)
                 download_live_window(info, folder / "source.mp4", video.options.get("live_s", LIVE_WINDOW_S), log)
@@ -187,7 +197,14 @@ def analyse(video_id: str, log: LogFn) -> Video:
             log("Reading comments in the background")
             reading = _BACKGROUND.submit(fetch_comments, video.url, video.duration)
 
+        chat_reading = None
+        if video.url and video.options.get("chat_read") is False:
+            log("Reading the live chat replay in the background")
+            chat_reading = _BACKGROUND.submit(fetch_replay_peaks, video.url, folder / "work")
+
         source = folder / "source.mp4"
+        if not source.exists() and video.options.get("watched_from"):  # a hype capture is of one moment, now gone
+            raise RuntimeError("This chat-hype capture was interrupted, and that moment of the stream is gone. Delete it.")
         if not source.exists():
             if video.url:
                 video = _stage(video, "Downloading video", log)
@@ -230,6 +247,17 @@ def analyse(video_id: str, log: LogFn) -> Video:
             video = _stage(video, "Matching comments to the transcript", log)
             video = _match_comments(video, reading, comments_file, log)
 
+        if chat_reading is not None:
+            video = _stage(video, "Reading the chat replay", log)
+            try:
+                peaks = chat_reading.result(timeout=CHAT_WAIT_S)
+                log(f"The chat spiked {len(peaks)} times" if peaks else "The chat never spiked")
+            except Exception as error:  # chat off, removed or too slow: carry on with the other signals
+                log(f"Could not read the chat ({str(error)[:120]}); continuing without it")
+                peaks = []
+            video = video.model_copy(update={"chat_peaks": peaks, "options": {**video.options, "chat_read": True}})
+            library.save_video(video)
+
         if not video.options.get("loudness_measured"):
             video = _stage(video, "Measuring loudness", log)
             loud = loud_seconds(measure_loudness(source))
@@ -253,9 +281,14 @@ def analyse(video_id: str, log: LogFn) -> Video:
             video = _stage(video, "Finding moments with AI", log)
             o = video.options
             try:
-                clips = find_clips(video, ask_ai, min_s=o.get("min_s", 20), max_s=o.get("max_s", 60),
-                                   max_clips=o.get("max_clips", 30), direction=o.get("direction", ""),
-                                   trends=current_note(), taste=taste_note(video.id))
+                if video.options.get("watched_from"):  # a chat-boom capture: the boom decides the clip, the AI names it
+                    clips = clips_at_booms(video, ask_ai, o.get("max_s", 60), log)
+                    if not clips:
+                        raise RuntimeError("Nobody speaks around this chat boom, so there is nothing to caption. Delete it.")
+                else:
+                    clips = find_clips(video, ask_ai, min_s=o.get("min_s", 20), max_s=o.get("max_s", 60),
+                                       max_clips=o.get("max_clips", 30), direction=o.get("direction", ""),
+                                       trends=current_note(), taste=taste_note(video.id))
             except AIUnavailable as error:
                 log(f"The AI is unavailable ({str(error)[:120]}); picking clips by loudness instead")
                 clips = loudness_clips(video, o.get("min_s", 20), o.get("max_s", 60), o.get("max_clips", 30))

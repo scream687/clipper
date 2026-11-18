@@ -10,6 +10,7 @@ AskFn = Callable[[str, dict, str], dict]
 BATCH = 8
 MAX_EMPHASIS = 6
 MAX_INSERTS = 3
+NO_CUTAWAYS = ("gameplay", "stream", "show")  # the picture is the content: a card over the game or the stage hides it
 
 SCHEMA = {
     "type": "object",
@@ -50,8 +51,8 @@ def build_prompt(video: Video, clips: list[Clip]) -> str:
             "(e.g. '90%', '₹50 lakh', 'Elon Musk'), sub is a 2-6 word line explaining it;\n"
             "  kind 'stock' when a concrete thing is described that stock footage can show: query is a 2-4 word English "
             "stock video search (e.g. 'hospital corridor', 'stock market crash'), text is 1-3 key words to show.\n"
-            "  Never in the first 2 seconds, never over the speaker's emotional peak, at least 6 seconds apart. "
-            "Gameplay and shows rarely need inserts.\n\n" + "\n".join(parts))
+            "  Show the thing on the word it is said. Never in the first 2 seconds, never over the speaker's emotional "
+            "peak, at least 6 seconds apart.\n\n" + "\n".join(parts))
 
 
 def _inside(clip: Clip, ids: list[int]) -> list[int]:
@@ -90,7 +91,8 @@ def decorate(video: Video, clips: list[Clip], ask: AskFn, log: Callable[[str], N
         batch = clips[start:start + BATCH]
         log(f"Planning edits {min(start + BATCH, len(clips))}/{len(clips)}")
         try:
-            out += apply(batch, ask(build_prompt(video, batch), SCHEMA, SYSTEM))
+            picked = apply(batch, ask(build_prompt(video, batch), SCHEMA, SYSTEM))
+            out += [c.model_copy(update={"broll": []}) for c in picked] if video.content in NO_CUTAWAYS else picked
         except (AIUnavailable, AIError, KeyError, TypeError) as error:
             log(f"Could not plan edits for these clips ({str(error)[:120]}); they keep plain captions")
             out += batch

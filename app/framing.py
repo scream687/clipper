@@ -226,24 +226,34 @@ def sample_faces(proxy: Path, start: float, end: float, width: int = SAMPLE_WIDT
 
 
 CAM_SAMPLES = 16     # frames looked at to find a streamer's facecam
-CAM_WIDTH = 960      # facecam faces are small (~60 px here): too small for the 640 px speaker tracking
+CAM_WIDTH = 1280     # facecam faces are small (~50 px here): too small for the 640 px speaker tracking
+CAM_TILES = (5, 4)   # ...and the detector wants a face to fill ~15 % of what it looks at, so look in small tiles
 CAM_MAX_FACE = 0.12  # a face narrower than this share of the width is an overlay, not the shot itself
 CAM_EDGE = 3.0       # a box border is a still edge at least this many times the median edge strength nearby
 CAM_INSET = 3        # px (at CAM_WIDTH) kept off the border line itself
-CAM_CORNER = 0.06    # a facecam sits in a corner: within this share of two adjacent frame edges
+CAM_EDGE_REACH = 4      # a facecam is pinned to the frame: its face is within this many face widths of an edge
+CAM_EDGE_SHARE = 0.18   # ...and within this share of the frame (a big face mid-frame is a camera shot, not an overlay)
+CAM_MIN_SHARE = 0.3    # the cam face must be seen in this share of the samples (a streamer may step away)
 
 
 def cam_box(frames: np.ndarray, faces: list[tuple[float, float, float]]) -> list[float] | None:
-    """[x, y, w, h] (0..1) of the facecam: the corner the small face stays in, bounded by the straight
+    """[x, y, w, h] (0..1) of the facecam: where a small face keeps coming back to, bounded by the straight
     edges that stay put while the gameplay moves. Pure (frames: N x H x W grey, faces: (cx, cy, w) px), so it is unit-tested."""
     n, height, width = frames.shape
-    if not faces or len(faces) < n / 2:
+    if not faces:
         return None
-    corner = lambda f: (f[0] > width / 2, f[1] > height / 2)
-    usual = statistics.mode(corner(f) for f in faces)
-    fx, fy, fw = (statistics.median(f[i] for f in faces if corner(f) == usual) for i in range(3))
+    # The cam is the face that stays put: group the faces around each one and keep the steadiest, biggest group
+    # (a HUD icon is steady but tiny; a game character or a member-alert avatar comes and goes).
+    near = lambda a, b: abs(a[0] - b[0]) <= a[2] and abs(a[1] - b[1]) <= a[2]
+    group = max(([f for f in faces if near(anchor, f)] for anchor in faces), key=lambda g: sum(f[2] for f in g))
+    if len(group) < CAM_MIN_SHARE * n:
+        return None
+    fx, fy, fw = (statistics.median(f[i] for f in group) for i in range(3))
     if fw > CAM_MAX_FACE * width:
         return None
+    rx, ry = min(CAM_EDGE_REACH * fw, CAM_EDGE_SHARE * width), min(CAM_EDGE_REACH * fw, CAM_EDGE_SHARE * height)
+    if not (fx <= rx or fx >= width - rx or fy <= ry or fy >= height - ry):
+        return None  # a small face mid-frame is someone in a wide shot, not an overlay
     gx = np.abs(np.diff(frames, axis=2)).mean(0)  # still vertical lines survive the average, moving ones fade
     gy = np.abs(np.diff(frames, axis=1)).mean(0)
     near_x = gx[max(int(fy - fw), 0):int(fy + fw)].mean(0)
@@ -263,10 +273,6 @@ def cam_box(frames: np.ndarray, faces: list[tuple[float, float, float]]) -> list
     y0 = border(near_y, fy - 5 * fw, fy - 0.8 * fw, fy - 1.5 * fw) + CAM_INSET
     y1 = border(near_y, fy + 0.8 * fw, fy + 5 * fw, fy + 1.5 * fw) - CAM_INSET
     x0, y0, x1, y1 = max(x0, 0), max(y0, 0), min(x1, width), min(y1, height)
-    at_side = x0 <= CAM_CORNER * width or x1 >= (1 - CAM_CORNER) * width
-    at_end = y0 <= CAM_CORNER * height or y1 >= (1 - CAM_CORNER) * height
-    if not (at_side and at_end):
-        return None  # a small face mid-frame is someone in a wide shot, not an overlay
     return [round(x0 / width, 4), round(y0 / height, 4), round((x1 - x0) / width, 4), round((y1 - y0) / height, 4)]
 
 
@@ -285,15 +291,19 @@ def find_facecam(proxy: Path, start: float, end: float) -> list[float] | None:
                                            running_mode=vision.RunningMode.IMAGE, num_faces=2,
                                            min_face_detection_confidence=0.4)
     faces = []
-    qh, qw = height // 2, CAM_WIDTH // 2
+    tiles = tile_boxes(*CAM_TILES, overlap=0.1)  # overlapping, so a face on a seam is whole in one of them
     with vision.FaceLandmarker.create_from_options(options) as landmarker:
-        for frame in frames:  # one quarter at a time: a corner facecam's face is then big enough to detect
-            for y0 in (0, qh):
-                for x0 in (0, qw):
-                    part = np.ascontiguousarray(frame[y0:y0 + qh, x0:x0 + qw])
-                    for face in landmarker.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=part)).face_landmarks:
-                        xs = [p.x for p in face]; ys = [p.y for p in face]
-                        faces.append((x0 + (min(xs) + max(xs)) / 2 * qw, y0 + (min(ys) + max(ys)) / 2 * qh, (max(xs) - min(xs)) * qw))
+        for frame in frames:
+            seen: list[tuple[float, float, float]] = []
+            for bx, by, bw, bh in tiles:
+                x0, y0, tw, th = round(bx * CAM_WIDTH), round(by * height), round(bw * CAM_WIDTH), round(bh * height)
+                part = np.ascontiguousarray(frame[y0:y0 + th, x0:x0 + tw])
+                for face in landmarker.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=part)).face_landmarks:
+                    xs = [p.x for p in face]; ys = [p.y for p in face]
+                    found = (x0 + (min(xs) + max(xs)) / 2 * tw, y0 + (min(ys) + max(ys)) / 2 * th, (max(xs) - min(xs)) * tw)
+                    if all(abs(found[0] - f[0]) > f[2] / 2 or abs(found[1] - f[1]) > f[2] / 2 for f in seen):
+                        seen.append(found)  # the same face in two overlapping tiles counts once
+            faces += seen
     return cam_box(frames.mean(axis=3, dtype=np.float32), faces)
 
 

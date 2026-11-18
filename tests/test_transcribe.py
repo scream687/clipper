@@ -35,3 +35,12 @@ def test_long_pauses_do_not_stretch_a_word(tmp_path):
     tokens = [token(b" one", 0, 300), token(b" two", 5000, 5300)]
     words = words_from_whisper_json(write(tmp_path, tokens))
     assert words[0]["end"] - words[0]["start"] <= 1.2
+
+
+def test_whisper_loops_over_noise_are_dropped_but_real_repeats_stay():
+    from app.transcribe import invented
+    assert invented("ek min dekho".split() * 13, 16.4)          # a loop over game sound
+    assert invented(["jhaal", "jhaal"], 30.0)                    # two words across 30 s of music
+    assert not invented("no bro no bro no bro".split(), 2.0)     # a streamer really saying it
+    assert not invented("L bhai GTA L bhai".split(), 2.5)
+    assert not invented("aaj hum baat karenge health ke baare mein".split(), 4.0)

@@ -49,3 +49,13 @@ def test_pexels_picks_a_portrait_mp4_near_full_hd():
              {"file_type": "video/mp4", "link": "https://c", "width": 1080, "height": 1920}]
     assert pexels.best_video_file({"video_files": files}) == "https://c"
     assert pexels.best_video_file({"video_files": files[:1]}) is None
+
+
+def test_no_cutaways_over_gameplay_but_emphasis_stays():
+    answer = {"clips": [{"clip": 0, "emphasis": [12], "punchline": -1,
+                         "inserts": [{"first_word": 20, "last_word": 25, "kind": "card", "text": "LOOTING", "sub": "", "query": ""}]}]}
+    clip = Clip(index=0, first_word=10, last_word=40)
+    [game] = edits.decorate(video().model_copy(update={"content": "stream"}), [clip], lambda *a: answer)
+    [talk] = edits.decorate(video().model_copy(update={"content": "talk"}), [clip], lambda *a: answer)
+    assert game.broll == [] and game.emphasis_words == [12]
+    assert [b["text"] for b in talk.broll] == ["LOOTING"]

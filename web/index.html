@@ -148,6 +148,7 @@
           <label class="field"><span>Shortest <small>s</small></span><input name="min_s" type="number" min="5" max="300" value="20" required></label>
           <label class="field"><span>Longest <small>s</small></span><input name="max_s" type="number" min="10" max="600" value="60" required></label>
           <label class="field"><span>Live streams <small>last minutes</small></span><input name="live_minutes" type="number" min="5" max="240" value="30" required></label>
+          <div class="toggles field-wide"><label><input type="checkbox" name="watch_chat" checked><span>Live streams: clip only when the live chat booms (untick to clip the last minutes instead)</span></label></div>
           <label class="field field-wide"><span>Direction <small>optional</small></span>
             <textarea name="direction" rows="2" maxlength="1000" placeholder="e.g. only 10:00 - 25:00, focus on money advice, skip the sponsor read"></textarea></label>
         </div>
@@ -394,6 +395,7 @@
     <li class="video-row">
       <a class="video-link"><span class="video-name"></span><span class="hint video-sub"></span></a>
       <p class="video-state"></p>
+      <button type="button" class="text-button video-watch" hidden></button>
       <button type="button" class="text-button video-delete">Delete</button>
     </li>
   </template>

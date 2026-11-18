@@ -80,7 +80,7 @@ def loudness_clips(video: Video, min_s: float, max_s: float, max_clips: int) -> 
 def level_speech(source: Path, start: float, duration: float, target: Path, lufs: float = -14.0) -> Path:
     """The speech of `duration` seconds of `source` from `start` as a levelled WAV: a gentle compressor evens the
     voice, then loudnorm lands it at `lufs` with peaks held under -1.5 dBTP (a limiter). Audio preparation, the
-    way the preview copy is prepared: the clip itself is still put together by HyperFrames."""
+    way the preview copy is prepared; app/render.py mixes it into the clip."""
     target.parent.mkdir(parents=True, exist_ok=True)
     result = subprocess.run([FFMPEG, "-v", "error", "-y", "-ss", f"{max(start, 0):.6f}", "-t", f"{duration:.6f}", "-i", str(source),
                              "-vn", "-af", f"acompressor=threshold=-24dB:ratio=3:attack=10:release=200:makeup=2,"

@@ -14,7 +14,7 @@ from typing import Any, Callable
 from app import DATA_DIR
 from app.model import Clip, Video, Word
 from app.quotes import CLUSTER_S, cluster, index_words
-from app.youtube import _options, download_caption_words
+from app.youtube import _options, signed_in, download_caption_words
 
 BENCH_DIR = DATA_DIR / "bench"
 MAX_SHORTS = 150         # the channel's latest Shorts; episodes keep getting clipped for weeks
@@ -25,6 +25,7 @@ WORKERS = 6
 LogFn = Callable[[str], None]
 
 
+@signed_in
 def _shorts_list(channel_id: str) -> list[dict[str, Any]]:
     import yt_dlp
 

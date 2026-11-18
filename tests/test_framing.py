@@ -105,6 +105,25 @@ def test_facecam_box_snaps_to_the_still_border_around_a_corner_face():
     assert abs(x * 480 - 373) <= 2 and abs((y + h) * 270 - 65) <= 3 and x + w > 0.97 and y < 0.02
 
 
+def test_facecam_on_a_side_edge_mid_height_is_found():
+    """Streams often pin the cam to the left edge halfway down (CarryMinati), not into a corner."""
+    rng = np.random.default_rng(2)
+    frames = rng.uniform(60, 120, (8, 270, 480)).astype(np.float32)
+    frames[:, 110:112, 0:100] = 255   # top border of the cam, y 110
+    frames[:, 180:182, 0:100] = 255   # bottom border, y 180
+    frames[:, 110:182, 100:102] = 255  # right border, x 100
+    box = cam_box(frames, [(50.0, 145.0, 26.0)] * 8)
+    assert box is not None
+    x, y, w, h = box
+    assert x < 0.02 and abs(y * 270 - 115) <= 4 and abs((y + h) * 270 - 177) <= 3 and abs((x + w) * 480 - 97) <= 3
+
+
+def test_a_steady_tiny_hud_icon_does_not_beat_the_cam_face():
+    faces = [(425.0, 32.0, 28.0)] * 8 + [(470.0, 260.0, 8.0)] * 8  # the cam face, and a little avatar icon in the HUD
+    x, y, w, h = cam_box(_gameplay_with_facecam(), faces)
+    assert x + w > 0.97 and y < 0.02
+
+
 def test_no_facecam_without_a_steady_small_corner_face():
     frames = _gameplay_with_facecam()
     assert cam_box(frames, []) is None

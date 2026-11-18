@@ -216,7 +216,7 @@ export class Preview {
     }
     let x = box.x, zoom = "";
     const zoomed = (p.zooms || []).some(([a, b]) => tOut >= a && tOut < b);
-    if (!box.crop && zoomed && p.framing === "fill") {  // the whole card punches in (app/compose.py #fit)
+    if (!box.crop && zoomed && p.framing === "fill") {  // the whole card punches in (app/render.py stage_box)
       const ax = this.stage.clientWidth / 2, ay = this.stage.clientHeight * p.zoom_anchor_y;
       zoom = `translate(${ax}px, ${ay}px) scale(${p.zoom}) translate(${-ax}px, ${-ay}px) `;
     }
@@ -241,7 +241,7 @@ export class Preview {
     this.onTime?.(tOut);
   }
 
-  // The text layer is web/overlay/ in an iframe: the very page HyperFrames renders for the export.
+  // The text layer is web/overlay/ in an iframe; the export draws the same plan with ffmpeg (app/ass.py).
   // Only the post header and the logo (ffmpeg overlays them as pictures) are drawn here.
   ensureFrame() {
     if (this.frame) return;

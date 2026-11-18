@@ -5,6 +5,7 @@ from typing import Any
 
 from app.model import Word
 from app.quotes import index_words, locate
+from app.youtube import signed_in
 
 MAX_PARENTS = 5000           # YouTube's top-sorted comments; likes concentrate at the top
 MAX_REPLIES_PER_THREAD = 3
@@ -27,6 +28,7 @@ def parse_times(text: str, duration: float) -> list[int]:
     return times
 
 
+@signed_in
 def fetch_comments(url: str, duration: float) -> list[dict[str, Any]]:
     """Top comments (YouTube's 'top' order), trimmed to what the clipper needs."""
     import yt_dlp

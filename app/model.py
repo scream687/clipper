@@ -52,6 +52,7 @@ class Video(BaseModel):
     heatmap: list[dict] = []
     loud: list[int] = []      # seconds where the audio is well above this video's normal level
     comments: list[dict] = []  # top comments: {text, likes, times}; only YouTube links have them
+    chat_peaks: list[dict] = []  # where the live chat spiked: {time, chat_at, x, sample}; streams only
     chapters: list[dict] = []
     created_at: str = ""
     options: dict = {}  # what the user asked for when adding it: max_clips, min_s, max_s, direction
