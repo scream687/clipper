@@ -1,0 +1,35 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "design-system-font",
+        "value": "clip arial black",
+        "createdAt": "2026-11-19T06:15:53.793Z",
+        "reason": "assistant judged: caption fonts served by the app so the editor preview matches the exported MP4's burned-in captions, not UI type"
+      },
+      {
+        "rule": "design-system-font",
+        "value": "clip arial bold",
+        "createdAt": "2026-11-19T06:15:53.813Z",
+        "reason": "assistant judged: caption fonts served by the app so the editor preview matches the exported MP4's burned-in captions, not UI type"
+      },
+      {
+        "rule": "design-system-font",
+        "value": "apple color emoji",
+        "createdAt": "2026-11-19T06:15:53.832Z",
+        "reason": "assistant judged: emoji overlay in the clip preview, must match the export's emoji rendering"
+      },
+      {
+        "rule": "broken-image",
+        "value": "*",
+        "files": [
+          "web/index.html"
+        ],
+        "createdAt": "2026-11-19T06:15:53.853Z",
+        "reason": "assistant judged: <img> inside <template> elements get their src from JS (library.js/video.js) when cloned"
+      }
+    ]
+  }
+}

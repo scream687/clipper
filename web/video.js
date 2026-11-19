@@ -93,8 +93,10 @@ function showCard(clip) {
   const picked = clip.source === "opusclip" ? "Picked by OpusClip" : `Score ${clip.score}/10`;
   el("r-count").textContent = `Clip ${n} of ${review.clips.length} · ${clock(clip.end - clip.start)} · ${picked}`;
   el("r-edit").href = `#/clip/${current}/${clip.index}`;
-  el("r-keep").classList.toggle("is-on", clip.status === "kept");
-  el("r-drop").classList.toggle("is-on", clip.status === "discarded");
+  for (const [id, status] of [["r-keep", "kept"], ["r-drop", "discarded"]]) {
+    el(id).classList.toggle("is-on", clip.status === status);
+    el(id).setAttribute("aria-pressed", String(clip.status === status));
+  }
 }
 
 function step(delta) {
@@ -124,6 +126,7 @@ function showTally() {
   const left = review.clips.length - kept - dropped;
   el("review-tally").textContent = `${review.clips.length} clips · ${kept} kept · ${dropped} dropped${left ? ` · ${left} to review` : " · all reviewed"}`;
   el("zip-export").textContent = kept ? `Export ${kept} kept clip${kept === 1 ? "" : "s"}` : `Export all ${review.clips.length - dropped} as zip`;
+  el("zip-export").className = left ? "quiet-button" : "solid-button";  // Keep is the one primary until the review is done
 }
 
 function wireReview() {

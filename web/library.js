@@ -1,12 +1,30 @@
-// Library: add a video, list every video with its progress.
+// Library: add a video, list every video with its progress and its best clips as cards.
 
 import { api, clock, el, showAlert } from "./util.js";
 
 const POLL_MS = 2500;
+const MAX_CARDS = 6;  // per video; the rest are one click away in its review feed
 let timer = null;
+const rendered = new Map();  // video id -> { sig, node }: unchanged rows keep their nodes, so posters don't flash on each poll
 
 export function wireLibrary() {
   el("add-form").addEventListener("submit", addVideo);
+  el("options-toggle").addEventListener("click", () => {
+    const open = el("add-more").hidden;
+    el("add-more").hidden = !open;
+    el("options-toggle").setAttribute("aria-expanded", String(open));
+  });
+  el("add-file").addEventListener("change", showFile);
+  const card = el("add-form");
+  card.addEventListener("dragover", (e) => { if (e.dataTransfer.types.includes("Files")) { e.preventDefault(); card.classList.add("is-dropping"); } });
+  card.addEventListener("dragleave", (e) => { if (!card.contains(e.relatedTarget)) card.classList.remove("is-dropping"); });
+  card.addEventListener("drop", (e) => {
+    card.classList.remove("is-dropping");
+    if (!e.dataTransfer.files.length) return;
+    e.preventDefault();
+    el("add-file").files = e.dataTransfer.files;
+    showFile();
+  });
   el("video-list").addEventListener("click", deleteVideo);
   el("video-list").addEventListener("click", toggleWatch);
   el("watch-list").addEventListener("click", addWatched);
@@ -83,25 +101,97 @@ async function addWatched(event) {
 
 export function leaveLibrary() { clearTimeout(timer); }
 
+function showFile() {
+  const file = el("add-file").files[0];
+  el("upload-label").textContent = file ? file.name : "Upload video";
+  el("add-file").closest(".chip").classList.toggle("is-on", Boolean(file));
+  if (file) el("add-url").value = "";
+}
+
 async function refresh() {
   clearTimeout(timer);
   let videos;
   try { videos = await api("/api/videos"); } catch (error) { showAlert(error.message); return; }
   el("library-empty").hidden = videos.length > 0;
-  el("video-list").replaceChildren(...videos.map(row));
+  el("side-count").textContent = videos.length || "";
+  const nodes = videos.map((video) => {
+    const sig = JSON.stringify(video), seen = rendered.get(video.id);
+    if (seen?.sig === sig) return seen.node;
+    const node = row(video);
+    rendered.set(video.id, { sig, node });
+    return node;
+  });
+  el("video-list").replaceChildren(...nodes);
   if (videos.some((v) => v.job || v.watching)) timer = setTimeout(refresh, POLL_MS);
+}
+
+const YOUTUBE_ID = /(?:[?&]v=|youtu\.be\/|\/live\/|\/shorts\/)([\w-]{11})/;
+
+function thumb(node, video) {
+  const img = node.querySelector(".group-thumb img"), id = video.url && YOUTUBE_ID.exec(video.url)?.[1];
+  const best = [...video.clips].sort((a, b) => b.score - a.score)[0];
+  const poster = best && `/api/videos/${video.id}/clips/${best.index}/poster.jpg`;
+  img.addEventListener("error", () => {  // no thumbnail (offline, removed video): the best clip's poster, else the plain tile
+    if (poster && !img.src.endsWith(poster)) img.src = poster; else img.hidden = true;
+  });
+  if (id) img.src = `https://i.ytimg.com/vi/${id}/mqdefault.jpg`;
+  else if (poster) img.src = poster;
+  else img.hidden = true;
+  const time = node.querySelector(".thumb-time");
+  time.textContent = video.live ? "Live" : video.duration ? clock(video.duration) : "";
+  time.classList.toggle("is-live", Boolean(video.live));
+  time.hidden = !time.textContent;
+}
+
+function clipCard(video, clip) {
+  const node = el("clip-card").content.firstElementChild.cloneNode(true);
+  const link = node.querySelector(".clip-card-link"), length = clock(Math.max(0, clip.end - clip.start));
+  const score = Math.round(clip.score * 10) / 10;
+  link.href = `#/clip/${video.id}/${clip.index}`;
+  link.setAttribute("aria-label", `${clip.title || "Untitled clip"}, score ${score} of 10, ${length}`);
+  const poster = node.querySelector(".clip-card-poster");
+  poster.src = `/api/videos/${video.id}/clips/${clip.index}/poster.jpg`;
+  poster.addEventListener("error", () => { poster.hidden = true; }, { once: true });
+  node.querySelector(".clip-card-media").style.aspectRatio = (clip.shape || video.shape || "9:16").replace(":", " / ");
+  node.querySelector(".card-score").textContent = `${score}/10`;
+  node.querySelector(".card-length").textContent = length;
+  const status = node.querySelector(".card-status");
+  if (clip.status !== "new") { status.textContent = clip.status === "kept" ? "Kept" : "Dropped"; status.hidden = false; }
+  node.classList.toggle("is-kept", clip.status === "kept");
+  node.classList.toggle("is-dropped", clip.status === "discarded");
+  node.querySelector(".clip-card-title").textContent = clip.title || "Untitled clip";
+  node.querySelector(".clip-card-hook").textContent = clip.hook;
+  return node;
+}
+
+function moreCard(video, hidden) {
+  const li = document.createElement("li");
+  li.className = "clip-card more-card";
+  const a = Object.assign(document.createElement("a"), { href: `#/video/${video.id}`, className: "more-card-link" });
+  a.append(Object.assign(document.createElement("strong"), { textContent: `+${hidden}` }),
+           Object.assign(document.createElement("span"), { textContent: `more clip${hidden === 1 ? "" : "s"}` }));
+  li.append(a);
+  return li;
 }
 
 function row(video) {
   const node = el("video-row").content.firstElementChild.cloneNode(true);
   node.querySelector(".video-link").href = `#/video/${video.id}`;
-  node.querySelector(".video-name").textContent = video.title;
+  node.querySelector(".group-thumb").href = `#/video/${video.id}`;
+  node.querySelector(".group-review").href = `#/video/${video.id}`;
+  node.querySelector(".group-review").hidden = !video.clips.length;
+  node.querySelector(".video-name").textContent = video.title.replace(/[?&]si=[\w-]+/, "");  // a not-yet-read link: drop the share tracker
   node.querySelector(".video-sub").textContent = [video.channel, video.duration ? clock(video.duration) : "", video.shape].filter(Boolean).join(" · ");
+  thumb(node, video);
+  const best = [...video.clips].sort((a, b) => (a.status === "discarded") - (b.status === "discarded") || b.score - a.score);
+  const shown = best.length > MAX_CARDS ? best.slice(0, MAX_CARDS - 1) : best;
+  node.querySelector(".clip-cards").replaceChildren(...shown.map((c) => clipCard(video, c)),
+    ...(best.length > shown.length ? [moreCard(video, best.length - shown.length)] : []));
   const stateEl = node.querySelector(".video-state");
   if (video.stage === "failed") {
     stateEl.textContent = "Stopped: open it to see why"; stateEl.classList.add("is-failed");
   } else if (video.stage === "ready") {
-    stateEl.textContent = `${video.clip_count} clip${video.clip_count === 1 ? "" : "s"}${video.kept ? ` · ${video.kept} exported` : ""}`;
+    stateEl.textContent = `${video.clip_count} clip${video.clip_count === 1 ? "" : "s"}${video.kept ? ` · ${video.kept} kept` : ""}`;
   } else if (!video.job) {
     stateEl.textContent = "Stopped: open it to try again"; stateEl.classList.add("is-failed");
   } else {
@@ -119,6 +209,8 @@ function row(video) {
   const del = node.querySelector(".video-delete");
   del.dataset.id = video.id;
   del.dataset.title = video.title;
+  del.setAttribute("aria-label", `Delete ${video.title}`);
+  del.title = "Delete video and its clips";
   del.hidden = Boolean(video.job || video.watching);
   return node;
 }
@@ -135,7 +227,7 @@ async function addVideo(event) {
                       max_s: Number(f.max_s.value), direction: f.direction.value.trim(), live_minutes: Number(f.live_minutes.value) };
     let id;
     if (file) {  // an upload has no live chat
-      el("add-button").textContent = "Uploading…";
+      el("add-button").lastElementChild.textContent = "Uploading…";
       const form = new FormData();
       form.append("file", file);
       form.append("language", f.language.value);
@@ -147,9 +239,9 @@ async function addVideo(event) {
     } else {
       ({ id } = await api("/api/videos", "POST", { url: f.url.value.trim(), ...options, watch_chat: f.watch_chat.checked }));
     }
-    f.url.value = ""; f.direction.value = ""; f.file.value = "";
+    f.url.value = ""; f.direction.value = ""; f.file.value = ""; showFile();
     location.hash = `#/video/${id}`;
-  } catch (error) { showAlert(error.message); } finally { el("add-button").disabled = false; el("add-button").textContent = "Find clips"; }
+  } catch (error) { showAlert(error.message); } finally { el("add-button").disabled = false; el("add-button").lastElementChild.textContent = "Find clips"; }
 }
 
 async function toggleWatch(event) {

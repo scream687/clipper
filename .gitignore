@@ -15,3 +15,7 @@ motion/.agents/
 motion/skills-lock.json
 client_secret.json
 client_secret*.json
+# Impeccable: only the shared detector config is published; local state, caches and critique runs stay here
+.impeccable/*
+!.impeccable/config.json
+.gemini/

@@ -9,6 +9,28 @@ const VIEWS = ["view-library", "view-video", "view-editor"];
 
 function show(view) {
   VIEWS.forEach((id) => { el(id).hidden = id !== view; });
+  const videos = document.querySelector('.side-link[data-scroll="view-library"]');
+  videos.setAttribute("aria-current", view === "view-library" ? "page" : "true");  // review and editor live under Videos
+}
+
+// Sidebar: jump to a part of the library (from another screen, once the library has drawn).
+document.querySelectorAll(".side-link[data-scroll]").forEach((link) => link.addEventListener("click", (event) => {
+  const go = () => el(link.dataset.scroll).scrollIntoView({ block: "start", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+  if (!el("view-library").hidden) { event.preventDefault(); go(); return; }
+  window.addEventListener("hashchange", () => setTimeout(go, 300), { once: true });  // ponytail: a fixed wait for the library to draw
+}));
+
+function showStreamers(handles) {
+  el("side-streamers").replaceChildren(...handles.map((handle) => {
+    const li = document.createElement("li");
+    const a = Object.assign(document.createElement("a"), { href: `https://www.youtube.com/${handle}/live`, target: "_blank", rel: "noopener noreferrer",
+      className: "side-link side-streamer", title: `Open ${handle}'s live page on YouTube` });
+    a.innerHTML = '<svg class="icon"><use href="#i-radio"/></svg>';
+    a.append(Object.assign(document.createElement("span"), { textContent: handle }));
+    li.append(a);
+    return li;
+  }));
+  el("side-streamers-empty").hidden = handles.length > 0;
 }
 
 async function route() {
@@ -34,6 +56,7 @@ async function loadSettings() {
   form.handle.value = settings.handle || "";
   form.brand.value = settings.brand || "";
   for (const name of ["channels", "live_channels", "upcoming", "trend_creators"]) form[name].value = (settings[name] || []).join("\n");
+  showStreamers(settings.live_channels || []);
   form.export_quality.value = settings.export_quality || "1080";
   form.export_fps.value = settings.export_fps || "source";
   form.auto_upload.checked = Boolean(settings.auto_upload);
@@ -68,7 +91,23 @@ async function loadYouTube() {
     li.append(`${new Date(u.slot).toLocaleString("en-IN", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })} · `, a);
     return li;
   }));
+  showPosting(y);
   if (y.job) youtubeTimer = setTimeout(loadYouTube, 4000);
+}
+
+// Auto-upload publishes to a public channel, so its real state is always on screen, not only inside Settings.
+function showPosting(y) {
+  const on = el("settings-form").elements.auto_upload.checked;
+  const blocked = !y.configured ? "YouTube is not set up (client_secret.json missing)" :
+    !y.connected ? "YouTube is not connected" : y.error ? "the YouTube sign-in expired" : "";
+  const status = el("side-posting");
+  status.hidden = false;
+  status.className = `side-status ${on && blocked ? "is-blocked" : on ? "is-on" : ""}`;
+  status.textContent = !on ? "Auto-posting is off" : blocked ? `Not posting: ${blocked}` :
+    `Posting daily at ${y.slots.join(" and ")} IST${y.channel ? ` to ${y.channel}` : ""}`;
+  const warning = el("auto-upload-warning");
+  warning.hidden = !(on && blocked);
+  warning.textContent = `Nothing will post until this is fixed: ${blocked}. See YouTube channel below.`;
 }
 
 el("youtube-connect").addEventListener("click", async (event) => {
@@ -111,6 +150,7 @@ function showOpusKey(saved) {
 
 const lines = (text) => text.split("\n").map((c) => c.trim()).filter(Boolean);
 
+el("settings-form").elements.auto_upload.addEventListener("change", () => loadYouTube());
 el("settings-toggle").addEventListener("click", () => {
   const open = el("settings").hidden;
   el("settings").hidden = !open;
@@ -126,6 +166,7 @@ el("settings-form").addEventListener("submit", async (event) => {
     showOpusKey(saved.has_opusclip_key);
     showPexelsKey(saved.has_pexels_key);
     el("settings-status").textContent = "Saved. New previews and exports use it.";
+    showStreamers(lines(f.live_channels.value));
     loadYouTube();
   } catch (error) { el("settings-status").textContent = error.message; }
 });

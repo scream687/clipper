@@ -12,3 +12,5 @@ for individuals and teams of up to 3 ([licence](https://www.remotion.dev/docs/li
 
 Earlier versions of this project vendored that whole core in `yt_short_clipper_core/`;
 it was removed once the new render plan and renderer replaced it (see `git log`).
+
+The icons in `web/index.html` (the `<symbol>` sprite) are from [Lucide](https://lucide.dev) (ISC License).
