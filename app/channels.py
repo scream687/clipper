@@ -5,7 +5,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from app.youtube import _options, signed_in
+from app.youtube import _options, fetch_info, signed_in
 
 DEFAULT_CHANNELS = ["@rajshamani", "@BeerBiceps"]
 HANDLE = re.compile(r"^@[A-Za-z0-9._-]{3,60}$")
@@ -55,3 +55,17 @@ def latest(handle: str) -> dict[str, Any]:
 def latest_for(handles: list[str]) -> list[dict[str, Any]]:
     with ThreadPoolExecutor(max_workers=4) as pool:
         return list(pool.map(latest, handles))
+
+
+def live_now(handle: str) -> str | None:
+    """The link of the handle's running live stream, or None (not live, or only scheduled). A YouTube sign-in
+    problem is raised, so it shows instead of looking like "nobody is live"."""
+    import yt_dlp
+
+    try:
+        info = fetch_info(f"https://www.youtube.com/{handle}/live")
+    except yt_dlp.utils.DownloadError:  # "not currently live", "will begin in ...": nothing to clip yet
+        return None
+    if info.get("live_status") != "is_live" or not info.get("id"):
+        return None
+    return f"https://www.youtube.com/live/{info['id']}"

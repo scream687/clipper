@@ -292,7 +292,16 @@ const camShare = ([x, y, w, h]) => {
   const p = state.plan, r = (v) => Math.round(v * 10000) / 10000;
   return [r(x / p.source_width), r(y / p.source_height), r(w / p.source_width), r(h / p.source_height)];
 };
-const onCam = (e) => e.offsetY < el("stage").clientHeight * state.plan.split.top_h / state.plan.height;
+const twoPart = (p) => p.framing === "split" || p.framing === "pip";
+// The facecam's rectangle on the stage, in CSS px: the top pane (split) or the small window (pip).
+const camRect = () => {
+  const p = state.plan, stage = el("stage"), s = stage.clientWidth / p.width;
+  return p.split.pip ? p.split.pip.map((v) => v * s) : [0, 0, stage.clientWidth, stage.clientHeight * p.split.top_h / p.height];
+};
+const onCam = (e) => {
+  const [x, y, w, h] = camRect();
+  return e.offsetX >= x && e.offsetX < x + w && e.offsetY >= y && e.offsetY < y + h;
+};
 
 function wireCropDrag() {
   const stage = el("stage");
@@ -302,7 +311,7 @@ function wireCropDrag() {
     stage.setPointerCapture(e.pointerId);
     stage.classList.add("is-dragging");
     const p = state.plan;
-    if (p.framing === "split") {  // each half has its own crop: drag the one under the pointer
+    if (twoPart(p)) {  // each half has its own crop: drag the one under the pointer
       drag = { x: e.clientX, y: e.clientY, half: onCam(e) ? "top" : "bottom", start: preview.splitAt(onCam(e) ? "top" : "bottom") };
       return;
     }
@@ -313,9 +322,9 @@ function wireCropDrag() {
     drag.moved = true;  // a click (or Chrome's zero-distance pointermove) must not pin the crop
     const p = state.plan, dx = e.clientX - drag.x;
     if (drag.half === "top") {  // the facecam crop moves both ways, in source pixels
-      const [x, y, w, h] = drag.start, topPx = stage.clientHeight * p.split.top_h / p.height;
-      preview.setSplitOverride("top", [clamp(x - dx * w / stage.clientWidth, 0, p.source_width - w),
-        clamp(y - (e.clientY - drag.y) * h / topPx, 0, p.source_height - h), w, h]);
+      const [x, y, w, h] = drag.start, [, , camW, camH] = camRect();
+      preview.setSplitOverride("top", [clamp(x - dx * w / camW, 0, p.source_width - w),
+        clamp(y - (e.clientY - drag.y) * h / camH, 0, p.source_height - h), w, h]);
       return;
     }
     const span = (drag.half ? p.split.crop_w : p.crop_w) / p.source_width;
@@ -325,7 +334,7 @@ function wireCropDrag() {
   });
   // Scrolling over the facecam zooms its crop around the centre.
   stage.addEventListener("wheel", (e) => {
-    if (!state || state.plan.framing !== "split" || !onCam(e)) return;
+    if (!state || !twoPart(state.plan) || !onCam(e)) return;
     e.preventDefault();
     const p = state.plan, [x, y, w, h] = preview.splitAt("top");
     const nw = Math.min(clamp(w * Math.exp(e.deltaY * WHEEL_ZOOM), p.source_width * CAM_MIN, p.source_width), p.source_height * w / h);

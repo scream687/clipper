@@ -161,7 +161,7 @@ def _framing(plan: Plan, work: Path) -> str:
     """[src] -> [stage]: the picture framed and moving the way the plan says."""
     W, H, sw, sh = plan.width, plan.height, plan.source_width, plan.source_height
     cuts = cut_times(plan)
-    if plan.framing == "split":
+    if plan.framing in ("split", "pip"):
         sp = plan.split
         x, y, cw, ch = sp["top"]
         top_h = sp["top_h"]
@@ -173,6 +173,14 @@ def _framing(plan: Plan, work: Path) -> str:
             k = scale_at(plan, t, cuts, zoom=True, punch=False)
             w, h = sp["crop_w"] / k, sp["crop_h"] / k
             return bx + (sp["crop_w"] - w) / 2, by + (sp["crop_h"] - h) / 2, w, h
+        stage = f"{_cropper('stage', crop_boxes(plan, stage_box(plan, cuts, False, W, H, plan.zoom_anchor_y)), work)},scale={W}:{H}:flags=bicubic,setsar=1[stage]"
+        if "pip" in sp:  # the video fills the frame, the facecam in a white-edged window over it
+            px, py, pw, ph = sp["pip"]
+            b = sp["border"]
+            return (f"[src]split[top][low];[top]crop={cw}:{ch}:{x}:{y}:exact=1,scale={pw}:{ph}:flags=lanczos,setsar=1,"
+                    f"pad={pw + 2 * b}:{ph + 2 * b}:{b}:{b}:color=white[topv];"
+                    f"[low]{_cropper('low', crop_boxes(plan, bottom), work)},scale={W}:{H}:flags=lanczos,setsar=1[lowv];"
+                    f"[lowv][topv]overlay={px - b}:{py - b},{stage}")
         return (f"[src]split[top][low];[top]crop={cw}:{ch}:{x}:{y}:exact=1,scale={W}:{top_h}:flags=lanczos,setsar=1[topv];"
                 f"[low]{_cropper('low', crop_boxes(plan, bottom), work)},scale={W}:{H - top_h}:flags=lanczos,setsar=1[lowv];"
                 f"[topv][lowv]vstack,{_cropper('stage', crop_boxes(plan, stage_box(plan, cuts, False, W, H, plan.zoom_anchor_y)), work)},"

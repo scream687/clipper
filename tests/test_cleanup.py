@@ -78,9 +78,8 @@ def test_unfinished_videos_are_resumed_on_start(lib, monkeypatch):
     for stage, vid in [("Downloading video", "20261101-120000-a"), ("ready", "20261101-120000-b"), ("failed", "20261101-120000-c")]:
         library.save_video(Video(id=vid, title=vid, duration=0, fps=0, width=0, height=0, stage=stage))
     submitted = []
-    monkeypatch.setattr(cleanup.queue, "submit", lambda lane, kind, subject, work: submitted.append(subject) or "job")
 
-    cleanup.resume_unfinished(lambda vid: (lambda log: None))
+    cleanup.resume_unfinished(lambda video: submitted.append(video.id))
 
     assert submitted == ["20261101-120000-a"]
 

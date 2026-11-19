@@ -110,3 +110,12 @@ def test_boom_clips_are_named_by_the_ai_but_cut_by_the_chat():
     clips = clips_at_booms(video, ask, 60)
     assert [round(c.score) for c in clips] == [9, 8] and clips[0].title == "Chat lost it"
     assert "never invent" in prompts[0] and "😂😂" in prompts[0] and "bhai dekho." in prompts[0]
+
+
+def test_a_wave_of_bot_commands_is_a_raffle_not_hype():
+    def line(text):
+        return json.dumps({"replayChatItemAction": {"actions": [{"addChatItemAction": {"item": {"liveChatTextMessageRenderer": {
+            "message": {"runs": [{"text": text}]}, "timestampUsec": "1", "authorExternalChannelId": "UC1"}}}}]},
+            "videoOffsetTimeMsec": "1000"})
+    assert chat.parse_line(line("!giveaway"), live=False) == []
+    assert chat.parse_line(line("W stream!"), live=False)[0].text == "W stream!"

@@ -351,15 +351,20 @@ def _fit_text(text: str, font: str, size: int, min_size: int, max_px: float, max
 CAM_TOP = (0.3, 0.5)  # share of the output height the facecam may take; the video gets the rest
 SPLIT_HOOK_Y = 0.03   # split: hook top and follow badge centre sit above the streamer's head, not over their face
 SPLIT_FOLLOW_Y = 0.06
+PIP_W = 0.4         # pip: the facecam window's width, share of the output width
+PIP_MARGIN = 0.04   # ...its gap from the side, share of the output width
+PIP_Y = 0.25        # ...its top, share of the output height: under the hook, well above the captions
+PIP_BORDER = 6      # px at 1080, white
 
 
 def _even(n: float) -> int:
     return int(n) // 2 * 2
 
 
-def _split(clip: Clip, video: Video, width: int, height: int) -> dict:
+def _split(clip: Clip, video: Video, width: int, height: int, pip: bool = False) -> dict:
     """Facecam on top, sized to the cam's own shape; the video below, cropped to fill. No facecam found:
-    the face the auto framing followed takes the top half."""
+    the face the auto framing followed takes the top half. `pip`: the video fills the whole frame and the
+    facecam sits in a small window on the side the cam is on in the source."""
     sw, sh = video.width, video.height
     box = clip.split_cam or clip.cam_box
     if box:
@@ -369,12 +374,20 @@ def _split(clip: Clip, video: Video, width: int, height: int) -> dict:
         top_h = _even(height / 2)
         cx = median([k.cx for k in clip.auto_keys if not k.fit] or [0.5])
         bh = sh; bw = min(sw, sh * width / top_h); bx, by = cx * sw - bw / 2, 0
-    aspect = width / top_h  # cut the box to the top's shape around its centre
+    window = None
+    if pip:
+        pw = _even(width * PIP_W)
+        ph = _even(min(max(pw * bh / bw, pw * 0.5), pw * 1.2))
+        right = bx + bw / 2 > sw / 2
+        margin = round(width * PIP_MARGIN)
+        window = [width - margin - pw if right else margin, round(height * PIP_Y), pw, ph]
+        top_h = height  # the video below gets the whole frame
+    aspect = window[2] / window[3] if window else width / top_h  # cut the box to the window's shape around its centre
     cw, ch = (bh * aspect, bh) if bw / bh > aspect else (bw, bw / aspect)
     cw, ch = _even(min(cw, sw)), _even(min(ch, sh))
     x = _even(min(max(bx + (bw - cw) / 2, 0), sw - cw))
     y = _even(min(max(by + (bh - ch) / 2, 0), sh - ch))
-    below = width / (height - top_h)
+    below = width / height if window else width / (height - top_h)
     crop_w = _even(min(sw, sh * below))
     lo, hi = 0, sw - crop_w  # where the video crop's left edge may go
     cam = clip.cam_box or clip.split_cam
@@ -384,7 +397,8 @@ def _split(clip: Clip, video: Video, width: int, height: int) -> dict:
         else:
             lo = min(hi, max(lo, _even((cam[0] + cam[2]) * sw)))
     return {"top": [x, y, cw, ch], "top_h": top_h, "bottom_cx": clip.split_bottom if clip.split_bottom is not None else 0.5,
-            "crop_w": crop_w, "crop_h": _even(min(sh, crop_w / below)), "bottom_x": [lo, hi]}
+            "crop_w": crop_w, "crop_h": _even(min(sh, crop_w / below)), "bottom_x": [lo, hi],
+            **({"pip": window, "border": max(2, round(PIP_BORDER * width / 1080))} if window else {})}
 
 
 def _canvas(clip: Clip, video: Video, width: int, height: int, scale: float) -> dict:
@@ -521,7 +535,8 @@ def build_plan(video: Video, clip: Clip, handle: str = "", quality: int = 1, bra
                                      end=min(duration, kept[wid].start + EMOJI_HOLD_S)))
     emoji_px = round(EMOJI_PX * scale)
     caption_line = line_height(look["font"], round(look["size"] * scale))
-    split = _split(clip, video, width, height) if clip.framing == "split" else {}
+    two_part = _split(clip, video, width, height, pip=clip.framing == "pip") if clip.framing in ("split", "pip") else {}
+    split = two_part if clip.framing == "split" else {}  # the hook and captions move only for the stacked split
     caption_y = split["top_h"] / height if split else CAPTION_Y[clip.shape]  # split: captions sit on the seam
     if clip.framing == "fill":  # captions go under the picture, not across its bottom edge
         below = (canvas["card_y"] + canvas["card_h"] + CAPTION_GAP * scale + caption_line * look["max_lines"] / 2) / height
@@ -562,7 +577,7 @@ def build_plan(video: Video, clip: Clip, handle: str = "", quality: int = 1, bra
         caption_y=caption_y, safe_width_px=safe_px, framing=clip.framing,
         source_width=video.width, source_height=video.height, crop_w=crop_w, crop_h=crop_h,
         crop_keys=out_keys, hook=hook, canvas=canvas,
-        split=split,
+        split=two_part,
         music={"file": clip.music, "volume": clip.music_volume / 100, "peak": clip.music_peak / 100,
                "riser_s": float(min(clip.riser_s, duration))} if clip.music else None,
         logo=_logo(clip, width, height, scale),

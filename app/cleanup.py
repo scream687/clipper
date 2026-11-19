@@ -21,12 +21,13 @@ DONE_STAGES = ("ready", "failed")
 LogFn = Callable[[str], None]
 
 
-def resume_unfinished(job_for: Callable[[str], Callable]) -> list[str]:
-    """Queue analysis again for every video a restart interrupted. Finished stages skip themselves."""
+def resume_unfinished(submit: Callable) -> list[str]:
+    """Queue analysis again for every video a restart interrupted (`submit(video)` picks its lane). Finished stages
+    skip themselves."""
     resumed = []
     for video in library.list_videos():
         if video.stage not in DONE_STAGES:
-            queue.submit("analysis", "analyse", video.id, job_for(video.id))
+            submit(video)
             resumed.append(video.id)
     return resumed
 

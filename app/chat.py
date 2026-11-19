@@ -63,8 +63,11 @@ def parse_line(line: str, live: bool) -> list[Msg]:
             t = int(r["timestampUsec"]) / 1e6 if live else int(wrap.get("videoOffsetTimeMsec", data.get("videoOffsetTimeMsec"))) / 1000
         except (KeyError, ValueError, TypeError):
             continue
+        text = "".join(parts).strip()
+        if text.startswith("!"):  # bot commands (!giveaway, !enter): a wave of them is a raffle, not hype
+            continue
         author = r.get("authorExternalChannelId") or r.get("authorName", {}).get("simpleText", "")
-        out.append(Msg(t, author, "".join(parts).strip(), "liveChatPaidMessageRenderer" in item))
+        out.append(Msg(t, author, text, "liveChatPaidMessageRenderer" in item))
     return out
 
 

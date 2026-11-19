@@ -191,6 +191,8 @@ def analyse(video_id: str, log: LogFn) -> Video:
                 video = _stage(video, "Capturing the live stream", log)
                 download_live_window(info, folder / "source.mp4", video.options.get("live_s", LIVE_WINDOW_S), log)
 
+        if video.options.get("live") and video.options.get("watch_chat") and not (folder / "source.mp4").exists():
+            return _stage(video, "ready", log)  # a retried or resumed watch-only stream: nothing to capture
         comments_file = folder / "comments.json"
         reading = None
         if video.url and not video.options.get("comments_read") and not comments_file.exists():
@@ -209,6 +211,9 @@ def analyse(video_id: str, log: LogFn) -> Video:
             if video.url:
                 video = _stage(video, "Downloading video", log)
                 info = fetch_info(video.url)  # checked here too: a resumed job skips the details step above
+                if info.get("is_live") and video.options.get("watch_chat"):
+                    video = video.model_copy(update={"options": {**video.options, "live": True}})
+                    return _stage(video, "ready", log)  # its clips come from the chat's booms (watch.py)
                 if info.get("is_live"):
                     video = _stage(video, "Capturing the live stream", log)
                     download_live_window(info, source, video.options.get("live_s", LIVE_WINDOW_S), log)

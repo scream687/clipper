@@ -348,3 +348,9 @@ kbd { display: inline-block; min-width: 1.4em; padding: 0 0.3em; border: 1px sol
 .tab:hover { color: var(--color-text); }
 .tab[aria-selected="true"] { color: var(--color-text); border-bottom-color: var(--color-signal); }
 .tab-pane { display: grid; gap: var(--space-4); }
+
+.youtube-box { border: 1px solid var(--color-line); border-radius: 12px; padding: var(--space-3); display: grid; gap: var(--space-2); }
+.youtube-box legend { font-weight: 600; padding: 0 var(--space-1); }
+.youtube-actions { display: flex; gap: var(--space-4); }
+.youtube-uploads { margin: 0; padding-left: 1.2em; font-size: var(--text-small); color: var(--color-muted); display: grid; gap: var(--space-1); }
+.youtube-uploads a { color: var(--color-text); }

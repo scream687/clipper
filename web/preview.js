@@ -184,19 +184,25 @@ export class Preview {
     const w = Math.round(this.stage.clientWidth * dpr), h = Math.round(this.stage.clientHeight * dpr);
     if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
     if (video.readyState < 2) return;
-    const k = video.videoWidth / p.source_width, topH = Math.round(h * sp.top_h / p.height);
+    const k = video.videoWidth / p.source_width, topH = sp.pip ? 0 : Math.round(h * sp.top_h / p.height);
     const [x, y, cw, ch] = this.splitAt("top");
-    this.splitCtx.drawImage(video, x * k, y * k, cw * k, ch * k, 0, 0, w, topH);
+    if (!sp.pip) this.splitCtx.drawImage(video, x * k, y * k, cw * k, ch * k, 0, 0, w, topH);
     const [lo, hi] = sp.bottom_x, left = Math.min(Math.max(Math.round(this.splitAt("bottom") * p.source_width - sp.crop_w / 2), lo), hi);
     const t = this.time ?? 0, z = (p.zooms || []).some(([a, b]) => t >= a && t < b) ? p.zoom : 1;  // punch-in on the lower pane
     const zw = sp.crop_w / z, zh = sp.crop_h / z;
     this.splitCtx.drawImage(video, (left + (sp.crop_w - zw) / 2) * k, ((p.source_height - sp.crop_h) / 2 + (sp.crop_h - zh) / 2) * k,
                             zw * k, zh * k, 0, topH, w, h - topH);
+    if (sp.pip) {  // the facecam window over the video, with its white edge (app/render.py _framing)
+      const s = w / p.width, [px, py, pw, ph] = sp.pip.map((v) => v * s), b = sp.border * s;
+      this.splitCtx.fillStyle = "#fff";
+      this.splitCtx.fillRect(px - b, py - b, pw + 2 * b, ph + 2 * b);
+      this.splitCtx.drawImage(video, x * k, y * k, cw * k, ch * k, px, py, pw, ph);
+    }
   }
 
   draw(tOut, video) {
     if (!this.plan || !this.cropBox) return;
-    const isSplit = this.plan.framing === "split";
+    const isSplit = this.plan.framing === "split" || this.plan.framing === "pip";
     this.split.hidden = !isSplit;
     if (isSplit) {
       this.fill.hidden = true;

@@ -214,6 +214,19 @@ def test_split_uses_the_users_crop_and_without_a_facecam_the_followed_face():
     assert none.split["top_h"] * 2 == none.height and h == v.height and abs(x + w / 2 - 0.45 * v.width) <= 2
 
 
+def test_pip_fills_the_frame_with_the_video_and_puts_the_facecam_in_a_window_on_its_side():
+    from app.model import Clip
+    v = _video_for_canvas()
+    plan = build_plan(v, Clip(index=0, first_word=0, last_word=3, framing="pip", cam_box=[0.78, 0.0, 0.22, 0.24]))
+    sp = plan.split
+    px, py, pw, ph = sp["pip"]
+    assert abs(sp["crop_w"] / sp["crop_h"] - plan.width / plan.height) < 0.02  # the video takes the whole frame
+    assert px + pw > plan.width / 2 and px + pw < plan.width  # the cam is on the right in the source: the window too
+    x, y, w, h = sp["top"]
+    assert abs(w / h - pw / ph) < 0.02  # the cam crop has the window's shape
+    assert plan.caption_y > (py + ph) / plan.height  # captions sit below the window, where they always are
+
+
 def test_music_logo_and_follow_badge_reach_the_plan(monkeypatch):
     from app import assets
     from app.model import Clip

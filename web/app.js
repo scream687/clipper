@@ -33,12 +33,70 @@ async function loadSettings() {
   const form = el("settings-form").elements;
   form.handle.value = settings.handle || "";
   form.brand.value = settings.brand || "";
-  for (const name of ["channels", "upcoming", "trend_creators"]) form[name].value = (settings[name] || []).join("\n");
+  for (const name of ["channels", "live_channels", "upcoming", "trend_creators"]) form[name].value = (settings[name] || []).join("\n");
   form.export_quality.value = settings.export_quality || "1080";
   form.export_fps.value = settings.export_fps || "source";
+  form.auto_upload.checked = Boolean(settings.auto_upload);
   showOpusKey(settings.has_opusclip_key);
   showPexelsKey(settings.has_pexels_key);
+  loadYouTube();
 }
+
+// ---------- YouTube channel: connect, daily uploads ----------
+let youtubeTimer = null;
+
+async function loadYouTube() {
+  clearTimeout(youtubeTimer);
+  let y;
+  try { y = await api("/api/youtube"); } catch (error) { el("youtube-state").textContent = error.message; return; }
+  const connect = el("youtube-connect");
+  if (!y.configured) {
+    el("youtube-state").textContent = "Needs a Google OAuth file first: put client_secret.json in the Clipper folder (README: YouTube uploads).";
+    connect.hidden = true;
+  } else if (y.connected && !y.error) {
+    el("youtube-state").textContent = `Connected to ${y.channel || "your channel"}. ${y.auto_upload ? `Posting daily at ${y.slots.join(" and ")} IST.` : "Daily posting is off."}`;
+    connect.hidden = false; connect.textContent = "Disconnect"; connect.dataset.action = "disconnect";
+  } else {
+    el("youtube-state").textContent = y.error ? `Sign-in expired: connect again. (${y.error})` : "Not connected.";
+    connect.hidden = false; connect.textContent = "Connect"; connect.dataset.action = "connect";
+  }
+  el("youtube-run").hidden = !(y.connected && !y.error);
+  el("youtube-uploads").replaceChildren(...y.uploads.map((u) => {
+    const li = document.createElement("li");
+    const a = document.createElement("a");
+    a.href = `https://youtu.be/${u.youtube_id}`; a.target = "_blank"; a.rel = "noopener"; a.textContent = u.title;
+    li.append(`${new Date(u.slot).toLocaleString("en-IN", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })} · `, a);
+    return li;
+  }));
+  if (y.job) youtubeTimer = setTimeout(loadYouTube, 4000);
+}
+
+el("youtube-connect").addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  try {
+    if (button.dataset.action === "disconnect") {
+      await api("/api/youtube", "DELETE");
+    } else {
+      el("youtube-state").textContent = "Finish the sign-in in the browser tab that opened…";
+      const { job } = await api("/api/youtube/connect", "POST");
+      for (let i = 0; i < 150; i++) {  // up to 5 minutes for the Google sign-in
+        await new Promise((r) => setTimeout(r, 2000));
+        const j = await api(`/api/jobs/${job}`);
+        if (j.status === "error") throw new Error(j.error);
+        if (j.status === "done") break;
+      }
+    }
+  } catch (error) { showAlert(error.message); }
+  button.disabled = false;
+  loadYouTube();
+});
+
+el("youtube-run").addEventListener("click", async () => {
+  try { await api("/api/youtube/run", "POST"); el("youtube-state").textContent = "Rendering and uploading the next clips…"; }
+  catch (error) { showAlert(error.message); }
+  setTimeout(loadYouTube, 1500);
+});
 
 function showPexelsKey(saved) {
   const field = el("settings-form").elements.pexels_key;
@@ -63,11 +121,12 @@ el("settings-form").addEventListener("submit", async (event) => {
   try {
     const f = event.currentTarget.elements;
     const saved = await api("/api/settings", "PUT", { handle: f.handle.value.trim(), brand: f.brand.value.trim(), opusclip_key: f.opusclip_key.value.trim(), pexels_key: f.pexels_key.value.trim(),
-      channels: lines(f.channels.value), upcoming: lines(f.upcoming.value), trend_creators: lines(f.trend_creators.value),
-      export_quality: f.export_quality.value, export_fps: f.export_fps.value });
+      channels: lines(f.channels.value), live_channels: lines(f.live_channels.value), upcoming: lines(f.upcoming.value), trend_creators: lines(f.trend_creators.value),
+      export_quality: f.export_quality.value, export_fps: f.export_fps.value, auto_upload: f.auto_upload.checked });
     showOpusKey(saved.has_opusclip_key);
     showPexelsKey(saved.has_pexels_key);
     el("settings-status").textContent = "Saved. New previews and exports use it.";
+    loadYouTube();
   } catch (error) { el("settings-status").textContent = error.message; }
 });
 

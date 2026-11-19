@@ -4,6 +4,9 @@ import io
 import json
 import os
 import subprocess
+import threading
+import time
+import traceback
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -15,7 +18,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
-from app import FFMPEG, ROOT, SETTINGS_FILE, ai, assets, channels, cleanup, house, library, opusclip, queue, sfx, trends, watch
+from app import FFMPEG, ROOT, SETTINGS_FILE, ai, assets, channels, cleanup, house, library, opusclip, queue, sfx, trends, uploader, watch
 from app.model import HEX_COLOUR, Background, Clip, CropKey, FramingMode, Look, Shape, UnitFloat, Video
 from app.emoji import is_emoji
 from app.moments import clean_hashtags, find_clips
@@ -41,10 +44,13 @@ SECURITY_HEADERS = {
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    cleanup.resume_unfinished(_analyse_job)  # finish analyses a restart interrupted
+    cleanup.resume_unfinished(_submit_analysis)  # finish analyses a restart interrupted
     for video_id in watch.to_resume():  # keep watching streams' chat across restarts (ends at once if one is over)
         _start_watch(video_id)
     cleanup.start_cleanup_timer()
+    threading.Thread(target=_live_loop, daemon=True, name="go-live").start()
+    uploader.start_timer(lambda: bool(load_settings().get("auto_upload")), lambda: export_options(load_settings()),
+                         _queue_upload)
     yield
 
 
@@ -97,12 +103,14 @@ class SettingsIn(BaseModel):
     handle: str = Field(default="", max_length=60)
     brand: str = Field(default="", max_length=50)  # display name on the X post template
     channels: list[str] | None = Field(default=None, max_length=50)
+    live_channels: list[str] | None = Field(default=None, max_length=50)  # streamers clipped as soon as they go live
     opusclip_key: str = Field(default="", max_length=500)  # blank keeps the saved one
     pexels_key: str = Field(default="", max_length=200)    # blank keeps the saved one
     upcoming: list[str] | None = Field(default=None, max_length=20)        # "2026-11-19 GTA 6 / GTA VI"
     trend_creators: list[str] | None = Field(default=None, max_length=60)
     export_quality: Literal["1080", "4k"] = "1080"
-    export_fps: Literal["source", "30", "60"] = "source"
+    export_fps: Literal["source", "24", "30", "60"] = "source"
+    auto_upload: bool = False  # post the AI's best clips to your YouTube channel daily (app/uploader.py)
 
 
 def load_settings() -> dict[str, Any]:
@@ -126,16 +134,21 @@ def get_settings() -> dict[str, Any]:
     settings = load_settings()
     upcoming, creators = trends.settings()
     return {"handle": settings.get("handle", ""), "brand": settings.get("brand", ""), "channels": settings.get("channels", channels.DEFAULT_CHANNELS),
+            "live_channels": settings.get("live_channels", []),
             "has_opusclip_key": bool(settings.get("opusclip_key")), "has_pexels_key": bool(settings.get("pexels_key")),
             "upcoming": [f"{e['date']} {' / '.join(e['terms'])}" for e in upcoming], "trend_creators": creators,
-            "export_quality": settings.get("export_quality", "1080"), "export_fps": settings.get("export_fps", "source")}
+            "export_quality": settings.get("export_quality", "1080"), "export_fps": settings.get("export_fps", "source"),
+            "auto_upload": bool(settings.get("auto_upload"))}
 
 
 @app.put("/api/settings")
 def put_settings(body: SettingsIn) -> dict[str, Any]:
-    update = {"handle": "".join(body.handle.split()), "brand": body.brand.strip(), "export_quality": body.export_quality, "export_fps": body.export_fps}  # a handle has no spaces: "@  name" -> "@name"
+    update = {"handle": "".join(body.handle.split()), "brand": body.brand.strip(), "export_quality": body.export_quality,
+              "export_fps": body.export_fps, "auto_upload": body.auto_upload}  # a handle has no spaces: "@  name" -> "@name"
     if body.channels is not None:
         update["channels"] = channels.clean_channels(body.channels)
+    if body.live_channels is not None:
+        update["live_channels"] = channels.clean_channels(body.live_channels)
     if body.upcoming is not None:
         update["upcoming"] = trends.parse_upcoming(body.upcoming)
     if body.trend_creators is not None:
@@ -295,13 +308,70 @@ def _watch_status(video_id: str) -> str | None:
 
 
 def _start_watch(video_id: str) -> str:
-    on_capture = lambda child_id: queue.submit("analysis", "analyse", child_id, _analyse_job(child_id))
+    on_capture = lambda child_id: _submit_analysis(library.load_video(child_id))
     return queue.submit(f"watch-{video_id}", "watch", f"{video_id}/watch",
                         lambda log: watch.watch(video_id, on_capture, log))
 
 
 def _analyse_job(video_id: str):
-    return lambda log: {"video_id": analyse(video_id, log).id}
+    def job(log):
+        done = analyse(video_id, log)
+        o = done.options
+        # a running stream clipped by its chat: start watching once the analysis has confirmed it is live
+        if o.get("live") and o.get("watch_chat") and not o.get("watched_from") and _watch_status(video_id) is None:
+            _start_watch(video_id)
+        return {"video_id": done.id}
+    return job
+
+
+def _submit_analysis(video: Video) -> str:
+    """Live links get their own lane: they only look up the stream (seconds) and must not wait behind a long
+    transcription. Everything else, chat-boom captures included, shares the analysis lane."""
+    live_link = "/live/" in (video.url or "") and not video.options.get("watched_from")
+    return queue.submit("live" if live_link else "analysis", "analyse", video.id, _analyse_job(video.id))
+
+
+def _queue_upload(work) -> str | None:
+    """One upload run at a time (the timer and the button share it)."""
+    return None if queue.active_for("youtube") else queue.submit("youtube", "upload", "youtube", work)
+
+
+@app.get("/api/youtube")
+def youtube_status() -> dict[str, Any]:
+    connected, name, error = uploader.TOKEN_FILE.is_file(), None, None
+    if connected:
+        try:
+            name = uploader.channel_name()
+        except Exception as problem:  # expired or revoked: show it, the user reconnects
+            error = str(problem)[:300]
+    job = queue.active_for("youtube")
+    return {"configured": uploader.configured(), "connected": connected, "channel": name, "error": error,
+            "auto_upload": bool(load_settings().get("auto_upload")), "slots": [f"{h:02d}:{m:02d}" for h, m in uploader.SLOTS],
+            "job": job["id"] if job else None, "uploads": list(reversed(uploader.history()))[:10]}
+
+
+@app.post("/api/youtube/connect")
+def youtube_connect() -> dict[str, Any]:
+    if not uploader.configured():
+        raise HTTPException(422, "Put your Google OAuth file in the Clipper folder as client_secret.json first "
+                                 "(README: YouTube uploads).")
+    return {"job": queue.submit("youtube-connect", "connect", "youtube-connect", lambda log: {"channel": uploader.connect(log)})}
+
+
+@app.delete("/api/youtube")
+def youtube_disconnect() -> dict[str, Any]:
+    uploader.disconnect()
+    return {"connected": False}
+
+
+@app.post("/api/youtube/run")
+def youtube_run() -> dict[str, Any]:
+    if not uploader.TOKEN_FILE.is_file():
+        raise HTTPException(422, "Connect your YouTube channel first.")
+    job = _queue_upload(lambda log: {"scheduled": uploader.tick(export_options(load_settings()), log)})
+    if job is None:
+        raise HTTPException(409, "An upload is already running.")
+    return {"job": job}
 
 
 @app.get("/api/videos")
@@ -309,15 +379,45 @@ def list_videos() -> list[dict[str, Any]]:
     return [_summary(v) for v in library.list_videos()]
 
 
-@app.post("/api/videos")
-def add_video(body: NewVideo) -> dict[str, Any]:
+def _add(body: NewVideo, **extra: Any) -> tuple[Video, str]:
     video = create_from_youtube(body.url, {"max_clips": body.max_clips, "min_s": body.min_s, "max_s": body.max_s,
                                            "direction": body.direction.strip(), "live_s": body.live_minutes * 60,
-                                           "watch_chat": body.watch_chat}, body.shape)
-    job = queue.submit("analysis", "analyse", video.id, _analyse_job(video.id))
-    if body.watch_chat:  # ends at once (with a note) when the link is not a running stream
-        _start_watch(video.id)
+                                           "watch_chat": body.watch_chat, **extra}, body.shape)
+    return video, _submit_analysis(video)  # a live stream's chat watch starts when the analysis confirms it is live
+
+
+@app.post("/api/videos")
+def add_video(body: NewVideo) -> dict[str, Any]:
+    video, job = _add(body)
     return {"id": video.id, "job": job}
+
+
+LIVE_CHECK_S = 5 * 60
+
+
+def check_live_channels(log=print) -> list[str]:
+    """Add every listed streamer who is live now and not in the library yet; its chat watch then clips the booms."""
+    known = {v.url for v in library.list_videos()}
+    added = []
+    for handle in load_settings().get("live_channels", []):
+        try:
+            url = channels.live_now(handle)
+        except Exception as problem:  # one channel's failure (sign-in, network) must not skip the others
+            log(f"{handle}: {str(problem)[:200]}")
+            continue
+        if url and url not in known:
+            log(f"{handle} is live: watching the chat")
+            added.append(_add(NewVideo(url=url), auto_from=handle)[0].id)
+    return added
+
+
+def _live_loop() -> None:
+    while True:
+        try:
+            check_live_channels()
+        except Exception:  # never stop checking; the next round retries
+            traceback.print_exc()
+        time.sleep(LIVE_CHECK_S)
 
 
 @app.post("/api/videos/{video_id}/watch")
@@ -370,8 +470,9 @@ def retry_video(video_id: str) -> dict[str, Any]:
     video = get_video_or_404(video_id)
     if queue.active_for(video_id):
         raise HTTPException(409, "This video is already being worked on.")
-    library.save_video(video.model_copy(update={"stage": "queued", "error": None}))
-    return {"id": video_id, "job": queue.submit("analysis", "analyse", video_id, _analyse_job(video_id))}
+    video = video.model_copy(update={"stage": "queued", "error": None})
+    library.save_video(video)
+    return {"id": video_id, "job": _submit_analysis(video)}
 
 
 @app.delete("/api/videos/{video_id}")
@@ -615,7 +716,7 @@ def edit_clip(video_id: str, index: int, body: ClipEdit) -> dict[str, Any]:
             raise HTTPException(422, "The full video was cleaned up after 14 days, so this clip can only be "
                                      "trimmed within the part that was kept.")
     updated = clip.model_copy(update=body.model_dump())
-    if updated.framing == "split":
+    if updated.framing in ("split", "pip"):
         updated = look_for_facecam(video, updated)  # once per clip, a few seconds
     library.save_clip(video_id, updated)
     return {"clip": updated.model_dump(), "plan": _plan_for(video, updated)}

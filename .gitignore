@@ -13,3 +13,5 @@ motion/public/arial-black.ttf
 motion/.claude/
 motion/.agents/
 motion/skills-lock.json
+client_secret.json
+client_secret*.json

@@ -30,6 +30,10 @@
         <textarea name="channels" rows="3" autocomplete="off" spellcheck="false" placeholder="@rajshamani"></textarea>
       </label>
       <label class="field">
+        <span>Streamers to auto-clip <small>one @handle per line; when one goes live, Clipper watches the chat and clips every boom</small></span>
+        <textarea name="live_channels" rows="3" autocomplete="off" spellcheck="false" placeholder="@CarryMinati"></textarea>
+      </label>
+      <label class="field">
         <span>Upcoming events <small>one per line: date, then names people search, split by /</small></span>
         <textarea name="upcoming" rows="2" autocomplete="off" spellcheck="false" placeholder="2026-11-19 GTA 6 / GTA VI / Grand Theft Auto"></textarea>
       </label>
@@ -43,7 +47,7 @@
       </label>
       <label class="field">
         <span>Export frame rate</span>
-        <select name="export_fps"><option value="source">Same as the video</option><option value="30">30 fps</option><option value="60">60 fps</option></select>
+        <select name="export_fps"><option value="source">Same as the video</option><option value="24">24 fps</option><option value="30">30 fps</option><option value="60">60 fps</option></select>
       </label>
       <label class="field">
         <span>OpusClip API key <small>optional, for “Also ask OpusClip”</small></span>
@@ -53,6 +57,16 @@
         <span>Pexels API key <small id="pexels-state">free at pexels.com/api; B-roll footage. Without it, B-roll moments become cards</small></span>
         <input name="pexels_key" type="password" maxlength="200" autocomplete="off" spellcheck="false">
       </label>
+      <fieldset class="youtube-box">
+        <legend>YouTube channel</legend>
+        <p class="hint" id="youtube-state" role="status">Checking…</p>
+        <div class="toggles"><label><input type="checkbox" name="auto_upload"><span>Post the AI's best clips every day at 1 PM and 7 PM IST</span></label></div>
+        <div class="youtube-actions">
+          <button type="button" class="text-button" id="youtube-connect">Connect</button>
+          <button type="button" class="text-button" id="youtube-run" hidden>Fill the next slots now</button>
+        </div>
+        <ol class="youtube-uploads" id="youtube-uploads"></ol>
+      </fieldset>
       <button type="submit" class="solid-button">Save</button>
       <p class="hint" id="settings-status" role="status"></p>
     </form>
@@ -316,6 +330,7 @@
                 <label><input type="radio" name="framing" value="crop"><span>Follow face</span></label>
                 <label><input type="radio" name="framing" value="fill"><span>Whole frame</span></label>
                 <label><input type="radio" name="framing" value="split"><span>Split</span></label>
+                <label><input type="radio" name="framing" value="pip"><span>PiP</span></label>
               </fieldset>
               <fieldset class="canvas-controls" id="canvas-controls"><legend>Canvas <small>behind the whole frame and wide shots</small></legend>
                 <div class="segmented">

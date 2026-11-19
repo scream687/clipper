@@ -75,7 +75,8 @@ def test_cuts_land_on_the_source_frames_exactly(source, tmp_path, monkeypatch):
         cursor += n
 
 
-@pytest.mark.parametrize("shape,framing,background", [("1:1", "crop", "blur"), ("9:16", "fill", "gradient"), ("9:16", "split", "blur")])
+@pytest.mark.parametrize("shape,framing,background", [("1:1", "crop", "blur"), ("9:16", "fill", "gradient"), ("9:16", "split", "blur"),
+                                                        ("9:16", "pip", "blur")])
 def test_every_framing_renders_frame_exact(source, tmp_path, shape, framing, background):
     clip = Clip(index=0, first_word=0, last_word=12, cut_word_ids=[5], shape=shape, framing=framing, background=background,
                 padding=6, radius=24, cam_box=[0.0, 0.0, 0.25, 0.3])

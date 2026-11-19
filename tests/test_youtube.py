@@ -54,3 +54,31 @@ def test_a_bot_check_fetches_the_session_once_and_retries(monkeypatch):
         raise RuntimeError("Sign in to confirm you're not a bot")
     with pytest.raises(RuntimeError, match="Open youtube.com"):
         blocked()
+
+
+def test_a_sign_in_locked_in_safari_says_how_to_unlock_it(monkeypatch):
+    import pytest
+    from app import youtube
+
+    def refuse(browser, logger=None):
+        raise PermissionError("Operation not permitted") if browser == "safari" else FileNotFoundError(browser)
+    monkeypatch.setattr("yt_dlp.cookies.extract_cookies_from_browser", refuse)
+
+    @youtube.signed_in
+    def blocked():
+        raise RuntimeError("Sign in to confirm you're not a bot")
+    with pytest.raises(RuntimeError, match="Full Disk Access"):
+        blocked()
+
+
+def test_a_channel_that_is_not_live_has_no_stream(monkeypatch):
+    import yt_dlp
+    from app import channels
+    def not_live(url):
+        raise yt_dlp.utils.DownloadError("ERROR: [youtube:tab] @x: The channel is not currently live")
+    monkeypatch.setattr(channels, "fetch_info", not_live)
+    assert channels.live_now("@x") is None
+    monkeypatch.setattr(channels, "fetch_info", lambda url: {"id": "v1", "live_status": "is_upcoming"})
+    assert channels.live_now("@x") is None
+    monkeypatch.setattr(channels, "fetch_info", lambda url: {"id": "v1", "live_status": "is_live"})
+    assert channels.live_now("@x") == "https://www.youtube.com/live/v1"

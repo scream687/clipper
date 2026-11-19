@@ -64,7 +64,30 @@ finished stream's chat replay is read in full and its spikes lead the moment pic
 - **B-roll and cards** (Remotion, `motion/`): a number or a name gets a card over the speaker's own frame; a concrete
   thing gets Pexels footage (free key in Settings; without one it becomes a card).
 
-## How it works
+## YouTube uploads (daily, automatic)
+
+With **Settings > YouTube channel** connected and *Post the AI's best clips every day* on, Clipper picks the two best
+new clips (AI score 7+, one per video, never one you discarded) and uploads them as Shorts, rendered and scheduled to
+go public at **1 PM and 7 PM IST**. It checks every 30 minutes and uploads each slot's clip up to 20 hours ahead.
+Titles get #Shorts, the description carries the hashtags and a credit line. Uploads are listed under the panel.
+
+One-time setup (about 10 minutes, your own Google Cloud project, free):
+
+1. console.cloud.google.com: create a project, then **APIs & Services > Library > YouTube Data API v3 > Enable**.
+2. **OAuth consent screen**: External; add your Google account under test users. Then **Publish app** (In
+   production). Without that, Google ends the sign-in every 7 days and the daily uploads stop. Verification is not
+   needed for your own use: at sign-in, click *Advanced > Go to (your app)* past the "unverified app" warning.
+3. **Credentials > Create credentials > OAuth client ID > Desktop app**, download the JSON and save it in the Clipper
+   folder as `client_secret.json` (kept out of git).
+4. Clipper: **Settings > YouTube channel > Connect**, pick the account that owns the channel, allow uploads. Tick the
+   daily posting box and **Save**.
+
+Limits: until Google audits your API project (YouTube API Services audit form), YouTube keeps API uploads private,
+so they will not go public at the slot by themselves: publish them in YouTube Studio with one tap. The free API quota
+allows about six uploads a day. Clips are reposted footage of other channels' streams: post only what you have the
+right to, or expect claims.
+
+
 
 - Transcript: YouTube's word-timed captions in the video's own language (never a dub's track); uploads
   and videos without them go through Whisper (large-v3-turbo) on this Mac.
@@ -111,7 +134,11 @@ uv run python -m scripts.score OUT VIDEO_ID ...  # rebuild and render top clips,
 
 ## Not built yet
 
-Chapters, picture-in-picture and three-person layouts, more post templates (news ticker), a light app theme.
+Chapters, three-person layouts, more post templates (news ticker), a light app theme.
 
 Clipping other creators' videos needs their permission; the credit line helps but does not replace it.
 See `VENDORED.md` for third-party code.
+
+## License
+
+MIT, see `LICENSE`. Contributions welcome: open an issue or a pull request.

@@ -42,7 +42,12 @@ SIGNED_IN = {"LOGIN_INFO", "SAPISID", "__Secure-3PSID"}  # any of these means a 
 SIGN_IN_HELP = ("YouTube asks Clipper to sign in (\"confirm you're not a bot\"). Open youtube.com in Chrome, Brave, "
                 "Edge, Firefox or Safari, make sure you are signed in, then press Try again. If your Mac asks to let "
                 "Clipper use the browser's saved data, allow it.")
+SAFARI_HELP = ("YouTube asks Clipper to sign in (\"confirm you're not a bot\"). Your sign-in is in Safari, which macOS "
+               "only lets apps with Full Disk Access read: System Settings > Privacy & Security > Full Disk Access, turn "
+               "on the app Clipper runs in (Terminal), then restart Clipper (./run.sh) and press Try again. Or sign in to "
+               "youtube.com in Google Chrome once and press Try again.")
 _cookie_lock = threading.Lock()
+_blocked: list[str] = []  # browsers the last refresh could not read because of macOS privacy protection
 
 
 def is_bot_check(error: BaseException) -> bool:
@@ -68,11 +73,17 @@ def refresh_cookies(browsers: tuple[str, ...] = BROWSERS) -> str | None:
         info = warning = error = debug
         def progress_bar(self): return None  # noqa: E704
 
+    global _blocked
+    blocked: list[str] = []
     with _cookie_lock:
+        _blocked = blocked
         for browser in browsers:
             try:
                 kept = signed_in_jar(extract_cookies_from_browser(browser, logger=Quiet()))
-            except Exception:  # not installed, locked, or access refused: try the next one
+            except PermissionError:  # Safari: macOS lets only apps with Full Disk Access read its cookies
+                blocked.append(browser)
+                continue
+            except Exception:  # not installed, never used, or access refused: try the next one
                 continue
             if not kept:
                 continue
@@ -96,7 +107,7 @@ def signed_in(fn):
             if not is_bot_check(error):
                 raise
             if refresh_cookies() is None:
-                raise RuntimeError(SIGN_IN_HELP) from error
+                raise RuntimeError(SAFARI_HELP if "safari" in _blocked else SIGN_IN_HELP) from error
             try:
                 return fn(*args, **kwargs)
             except Exception as again:

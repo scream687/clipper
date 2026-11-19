@@ -13,7 +13,8 @@ from pydantic import BaseModel, Field
 
 Shape = Literal["9:16", "4:5", "1:1", "16:9"]
 Look = Literal["highlight", "karaoke", "pop", "build", "line", "boxed"]
-FramingMode = Literal["crop", "fill", "split"]  # crop = follow keys; fill = whole frame on the canvas; split = facecam over the video
+FramingMode = Literal["crop", "fill", "split", "pip"]  # crop = follow keys; fill = whole frame on the canvas; split = facecam over the video;
+# pip = the video fills the frame, facecam in a small window
 Background = Literal["blur", "color", "gradient"]
 HEX_COLOUR = r"^#[0-9A-Fa-f]{6}$"
 UnitFloat = Annotated[float, Field(ge=0, le=1)]

@@ -199,3 +199,47 @@ def test_keep_and_drop_set_the_status_and_teach_a_rating(client, stored):
     assert library.load_clip(stored.id, 0).status == "kept"
     assert client.post(f"/api/videos/{stored.id}/clips/0/status", json={"status": "discarded"}).json()["rating"] == 8  # rated stays
     assert client.post(f"/api/videos/{stored.id}/clips/0/status", json={"status": "maybe"}).status_code == 422
+
+
+def test_live_links_skip_the_queue_and_watch_only_after_they_are_confirmed(monkeypatch):
+    from app import queue, server
+    from app.model import Video
+    lanes, watched = [], []
+    monkeypatch.setattr(queue, "submit", lambda lane, kind, subject, work: lanes.append(lane) or "job")
+    live = Video(id="20260101-000000-l", url="https://www.youtube.com/live/abc", title="", duration=0, fps=0, width=0, height=0)
+    vod = live.model_copy(update={"url": "https://youtu.be/abc"})
+    capture = live.model_copy(update={"options": {"watched_from": "x"}})
+    for v in (live, vod, capture):
+        server._submit_analysis(v)
+    assert lanes == ["live", "analysis", "analysis"]  # a boom capture transcribes: it queues with the rest
+
+    done = live.model_copy(update={"options": {"live": True, "watch_chat": True}})
+    monkeypatch.setattr(server, "analyse", lambda vid, log: done)
+    monkeypatch.setattr(server, "_start_watch", lambda vid: watched.append(vid))
+    monkeypatch.setattr(server, "_watch_status", lambda vid: None)
+    server._analyse_job(done.id)(lambda m: None)
+    assert watched == [done.id]
+
+
+def test_a_listed_streamer_going_live_is_added_once_and_watched(client, monkeypatch):
+    client.put("/api/settings", json={"live_channels": ["@CarryMinati", "@offline"]})
+    live = {"@CarryMinati": "https://www.youtube.com/live/abc123"}
+    monkeypatch.setattr(server.channels, "live_now", lambda h: live.get(h))
+    submitted = []
+    monkeypatch.setattr(server, "_submit_analysis", lambda v: submitted.append(v) or "job1")
+    [vid] = server.check_live_channels(log=lambda _: None)
+    video = library.load_video(vid)
+    assert video.url == live["@CarryMinati"] and video.options["watch_chat"] and video.options["auto_from"] == "@CarryMinati"
+    assert server.check_live_channels(log=lambda _: None) == [] and len(submitted) == 1  # same stream: not added again
+
+
+def test_one_channel_failing_does_not_skip_the_others(client, monkeypatch):
+    client.put("/api/settings", json={"live_channels": ["@broken", "@live"]})
+    def live_now(handle):
+        if handle == "@broken":
+            raise RuntimeError("sign in")
+        return "https://www.youtube.com/live/zzz999"
+    monkeypatch.setattr(server.channels, "live_now", live_now)
+    monkeypatch.setattr(server, "_submit_analysis", lambda v: "job")
+    logs = []
+    assert len(server.check_live_channels(log=logs.append)) == 1 and "sign in" in logs[0]
