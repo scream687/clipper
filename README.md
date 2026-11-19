@@ -33,7 +33,11 @@ Runs entirely on this Mac at http://127.0.0.1:8765.
 ## Settings
 
 @handle, display name (X post template), logo and music library, export quality (1080p or 4K) and frame
-rate (source, 30 or 60 fps), watched channels, trends, OpusClip key, and the AI provider.
+rate (source, 24, 30 or 60 fps), watched channels, trends, OpusClip key, and the AI provider.
+
+A fresh install starts from `settings.example.json`: the author's own setup (channels, trend creators, house look,
+Gemini as the AI) with every API key removed. Add your own keys in Settings; they are saved in `data/settings.json`,
+which never leaves your machine.
 
 ## Live streams
 

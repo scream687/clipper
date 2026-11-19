@@ -243,3 +243,24 @@ def test_one_channel_failing_does_not_skip_the_others(client, monkeypatch):
     monkeypatch.setattr(server, "_submit_analysis", lambda v: "job")
     logs = []
     assert len(server.check_live_channels(log=logs.append)) == 1 and "sign in" in logs[0]
+
+
+def test_a_fresh_install_starts_from_the_example_settings_and_never_overwrites_its_own(tmp_path, monkeypatch):
+    import json
+    from app import server
+    settings, example = tmp_path / "data" / "settings.json", tmp_path / "settings.example.json"
+    example.write_text(json.dumps({"handle": "@me", "channels": ["@a"]}))
+    monkeypatch.setattr(server, "SETTINGS_FILE", settings)
+    monkeypatch.setattr(server, "EXAMPLE_SETTINGS", example)
+    server.seed_settings()
+    assert json.loads(settings.read_text()) == {"handle": "@me", "channels": ["@a"]}
+    settings.write_text(json.dumps({"handle": "@mine"}))
+    server.seed_settings()
+    assert json.loads(settings.read_text()) == {"handle": "@mine"}
+
+
+def test_the_published_example_settings_hold_no_secrets():
+    import re
+    from app import ROOT
+    text = (ROOT / "settings.example.json").read_text(encoding="utf-8")
+    assert not re.search(r'"[^"]*(key|token|secret|password|cookie)[^"]*"\s*:', text, re.I)

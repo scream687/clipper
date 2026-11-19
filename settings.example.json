@@ -1,0 +1,84 @@
+{
+ "handle": "@sfxme",
+ "ai": {
+  "provider": "gemini",
+  "model": "models/gemini-3.1-flash-lite",
+  "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/"
+ },
+ "house_look": {
+  "look": "pop",
+  "background": "blur",
+  "bg_color": "#111111",
+  "bg_color2": "#3A2A10",
+  "padding": 0,
+  "radius": 0,
+  "show_hook": true,
+  "show_handle": false,
+  "show_credit": false,
+  "swear_filter": false,
+  "show_emoji": false,
+  "music": "",
+  "music_volume": 15,
+  "music_peak": 15,
+  "riser_s": 0,
+  "show_logo": false,
+  "logo_corner": "tr",
+  "logo_size": 14,
+  "show_follow": false,
+  "template": "none",
+  "tweet_theme": "light",
+  "tighten": true,
+  "punch_in": true,
+  "sfx": true,
+  "sfx_safe_only": false,
+  "show_progress": true,
+  "show_broll": true
+ },
+ "brand": "",
+ "export_quality": "1080",
+ "export_fps": "source",
+ "auto_upload": true,
+ "channels": [
+  "@rajshamani",
+  "@BeerBiceps"
+ ],
+ "live_channels": [],
+ "upcoming": [
+  {
+   "date": "2026-11-19",
+   "terms": [
+    "GTA 6",
+    "GTA VI",
+    "Grand Theft Auto"
+   ]
+  }
+ ],
+ "trend_creators": [
+  "@rajshamani",
+  "@BeerBiceps",
+  "@RanveerAllahbadia",
+  "@nikhil.kamath",
+  "@ShubhankarMishraOfficial",
+  "@HindiRush",
+  "@dhruvrathee",
+  "@thedeshbhakt",
+  "@thelallantop",
+  "@warikoo",
+  "@SandeepSeminars",
+  "@TechnicalGuruji",
+  "@CarryMinati",
+  "@TriggeredInsaan",
+  "@SamayRainaOfficial",
+  "@BBKiVines",
+  "@FukraInsaan",
+  "@ElvishYadavVlogs",
+  "@MostlySane",
+  "@ZakirKhan",
+  "@KunalKamra",
+  "@AbhiNiyu",
+  "@TotalGaming093",
+  "@MortaLyt",
+  "@Mythpat",
+  "@Dostcast"
+ ]
+}

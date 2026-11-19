@@ -33,7 +33,7 @@ MAX_TEXT = 300
 
 SECURITY_HEADERS = {
     "Content-Security-Policy": (
-        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; "
+        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://i.ytimg.com; font-src 'self'; "
         "media-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'self'"
     ),
     "X-Content-Type-Options": "nosniff",
@@ -44,6 +44,7 @@ SECURITY_HEADERS = {
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    seed_settings()
     cleanup.resume_unfinished(_submit_analysis)  # finish analyses a restart interrupted
     for video_id in watch.to_resume():  # keep watching streams' chat across restarts (ends at once if one is over)
         _start_watch(video_id)
@@ -120,6 +121,15 @@ def load_settings() -> dict[str, Any]:
         return {}
     except (OSError, json.JSONDecodeError) as error:
         raise HTTPException(500, f"Could not read {SETTINGS_FILE.name}: {error}") from error
+
+
+EXAMPLE_SETTINGS = ROOT / "settings.example.json"  # the author's setup without keys: a fresh install starts from it
+
+
+def seed_settings() -> None:
+    """First start: copy settings.example.json in, so a new install has channels, streamers and a house look."""
+    if not SETTINGS_FILE.exists() and EXAMPLE_SETTINGS.is_file():
+        save_settings(json.loads(EXAMPLE_SETTINGS.read_text(encoding="utf-8")))
 
 
 def save_settings(settings: dict[str, Any]) -> None:
@@ -376,7 +386,20 @@ def youtube_run() -> dict[str, Any]:
 
 @app.get("/api/videos")
 def list_videos() -> list[dict[str, Any]]:
-    return [_summary(v) for v in library.list_videos()]
+    return [{**_summary(v), "clips": _clip_summaries(v)} for v in library.list_videos()]
+
+
+def _clip_summaries(video: Video) -> list[dict[str, Any]]:
+    """What a clip card and the review list show: titles, score, status, source times, whether it is exported."""
+    words = {w.id: w for w in video.words}
+    out = []
+    for c in library.load_clips(video.id):
+        first, last = words.get(c.first_word), words.get(c.last_word)
+        out.append({**c.model_dump(include={"index", "title", "hook", "description", "score", "retention", "mentions", "status",
+                                            "look", "shape", "source"}),
+                    "start": first.start if first else 0, "end": last.end if last else 0,
+                    "exported": (library.clip_dir(video.id, c.index) / "export.mp4").is_file()})
+    return out
 
 
 def _add(body: NewVideo, **extra: Any) -> tuple[Video, str]:
@@ -487,14 +510,7 @@ def delete_video(video_id: str) -> dict[str, str]:
 @app.get("/api/videos/{video_id}")
 def get_video(video_id: str) -> dict[str, Any]:
     video = get_video_or_404(video_id)
-    words = {w.id: w for w in video.words}
-    clips = []
-    for c in library.load_clips(video_id):
-        first, last = words.get(c.first_word), words.get(c.last_word)
-        clips.append({**c.model_dump(include={"index", "title", "hook", "description", "score", "retention", "mentions", "status",
-                                              "look", "shape", "source"}),
-                      "start": first.start if first else 0, "end": last.end if last else 0,
-                      "exported": (library.clip_dir(video_id, c.index) / "export.mp4").is_file()})
+    clips = _clip_summaries(video)
     zip_job = queue.active_for(f"{video_id}/zip")
     opus_job = queue.active_for(f"{video_id}/opusclip")
     return {**_summary(video), "heatmap": video.heatmap, "language": video.language,
