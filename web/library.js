@@ -1,11 +1,11 @@
 // Library: add a video, list every video with its progress and its best clips as cards.
 
-import { api, clock, el, showAlert } from "./util.js";
+import { api, clock, el, showAlert, streamTitle, youtubeId } from "./util.js";
 
 const POLL_MS = 2500;
-const MAX_CARDS = 6;  // per video; the rest are one click away in its review feed
+const MAX_CARDS = 6;  // per row; the rest are one click away in the review feed
 let timer = null;
-const rendered = new Map();  // video id -> { sig, node }: unchanged rows keep their nodes, so posters don't flash on each poll
+const rendered = new Map();  // row key (its video ids) -> { sig, node }: unchanged rows keep their nodes, so posters don't flash on each poll
 
 export function wireLibrary() {
   el("add-form").addEventListener("submit", addVideo);
@@ -112,25 +112,41 @@ async function refresh() {
   clearTimeout(timer);
   let videos;
   try { videos = await api("/api/videos"); } catch (error) { showAlert(error.message); return; }
+  const groups = byStream(videos);
   el("library-empty").hidden = videos.length > 0;
-  el("side-count").textContent = videos.length || "";
-  const nodes = videos.map((video) => {
-    const sig = JSON.stringify(video), seen = rendered.get(video.id);
+  el("side-count").textContent = groups.length || "";
+  const nodes = groups.map((members) => {
+    const key = members.map((m) => m.id).join(","), sig = JSON.stringify(members), seen = rendered.get(key);
     if (seen?.sig === sig) return seen.node;
-    const node = row(video);
-    rendered.set(video.id, { sig, node });
+    const node = row(members);
+    rendered.set(key, { sig, node });
     return node;
   });
   el("video-list").replaceChildren(...nodes);
   if (videos.some((v) => v.job || v.watching)) timer = setTimeout(refresh, POLL_MS);
 }
 
-const YOUTUBE_ID = /(?:[?&]v=|youtu\.be\/|\/live\/|\/shorts\/)([\w-]{11})/;
 
-function thumb(node, video) {
-  const img = node.querySelector(".group-thumb img"), id = video.url && YOUTUBE_ID.exec(video.url)?.[1];
-  const best = [...video.clips].sort((a, b) => b.score - a.score)[0];
-  const poster = best && `/api/videos/${video.id}/clips/${best.index}/poster.jpg`;
+// Every capture of one live stream (each chat boom is its own video) shares the stream's link: one group per stream.
+function byStream(videos) {
+  const groups = new Map();
+  for (const video of videos) {  // newest first, as the server lists them
+    const key = (video.live && youtubeId(video.url)) || video.id;
+    groups.set(key, [...(groups.get(key) || []), video]);
+  }
+  return [...groups.values()];
+}
+
+// The boom a capture was made for ("… · chat hype 04:24 (2.6x)"), else when it was captured (its id starts with the time).
+function captureLabel(video) {
+  const boom = /chat hype (\d{1,2}:\d{2})/.exec(video.title), made = /^\d{8}-(\d{2})(\d{2})/.exec(video.id);
+  return boom ? `Boom at ${boom[1]}` : made ? `Captured ${made[1]}:${made[2]}` : "";
+}
+
+function thumb(node, video, clips) {
+  const img = node.querySelector(".group-thumb img"), id = youtubeId(video.url);
+  const best = [...clips].sort((a, b) => b.score - a.score)[0];
+  const poster = best && `/api/videos/${best.video.id}/clips/${best.index}/poster.jpg`;
   img.addEventListener("error", () => {  // no thumbnail (offline, removed video): the best clip's poster, else the plain tile
     if (poster && !img.src.endsWith(poster)) img.src = poster; else img.hidden = true;
   });
@@ -143,12 +159,12 @@ function thumb(node, video) {
   time.hidden = !time.textContent;
 }
 
-function clipCard(video, clip) {
-  const node = el("clip-card").content.firstElementChild.cloneNode(true);
+function clipCard(clip, showWhen) {
+  const video = clip.video, node = el("clip-card").content.firstElementChild.cloneNode(true);
   const link = node.querySelector(".clip-card-link"), length = clock(Math.max(0, clip.end - clip.start));
-  const score = Math.round(clip.score * 10) / 10;
+  const score = Math.round(clip.score * 10) / 10, at = showWhen ? captureLabel(video) : "";
   link.href = `#/clip/${video.id}/${clip.index}`;
-  link.setAttribute("aria-label", `${clip.title || "Untitled clip"}, score ${score} of 10, ${length}`);
+  link.setAttribute("aria-label", `${clip.title || "Untitled clip"}, score ${score} of 10, ${length}${at ? `, ${at.toLowerCase()}` : ""}`);
   const poster = node.querySelector(".clip-card-poster");
   poster.src = `/api/videos/${video.id}/clips/${clip.index}/poster.jpg`;
   poster.addEventListener("error", () => { poster.hidden = true; }, { once: true });
@@ -160,58 +176,69 @@ function clipCard(video, clip) {
   node.classList.toggle("is-kept", clip.status === "kept");
   node.classList.toggle("is-dropped", clip.status === "discarded");
   node.querySelector(".clip-card-title").textContent = clip.title || "Untitled clip";
+  const atEl = node.querySelector(".clip-card-when");
+  atEl.textContent = at; atEl.hidden = !at;
   node.querySelector(".clip-card-hook").textContent = clip.hook;
   return node;
 }
 
-function moreCard(video, hidden) {
+function moreCard(href, hidden) {
   const li = document.createElement("li");
   li.className = "clip-card more-card";
-  const a = Object.assign(document.createElement("a"), { href: `#/video/${video.id}`, className: "more-card-link" });
+  const a = Object.assign(document.createElement("a"), { href, className: "more-card-link" });
   a.append(Object.assign(document.createElement("strong"), { textContent: `+${hidden}` }),
            Object.assign(document.createElement("span"), { textContent: `more clip${hidden === 1 ? "" : "s"}` }));
   li.append(a);
   return li;
 }
 
-function row(video) {
-  const node = el("video-row").content.firstElementChild.cloneNode(true);
-  node.querySelector(".video-link").href = `#/video/${video.id}`;
-  node.querySelector(".group-thumb").href = `#/video/${video.id}`;
-  node.querySelector(".group-review").href = `#/video/${video.id}`;
-  node.querySelector(".group-review").hidden = !video.clips.length;
-  node.querySelector(".video-name").textContent = video.title.replace(/[?&]si=[\w-]+/, "");  // a not-yet-read link: drop the share tracker
-  node.querySelector(".video-sub").textContent = [video.channel, video.duration ? clock(video.duration) : "", video.shape].filter(Boolean).join(" · ");
-  thumb(node, video);
-  const best = [...video.clips].sort((a, b) => (a.status === "discarded") - (b.status === "discarded") || b.score - a.score);
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+// One video, or every capture of one stream. members[0] is the newest.
+function row(members) {
+  const video = members[0], stream = members.length > 1, node = el("video-row").content.firstElementChild.cloneNode(true);
+  const clips = members.flatMap((m) => m.clips.map((c) => ({ ...c, video: m })));
+  const fresh = clips.filter((c) => c.status === "new"), kept = clips.filter((c) => c.status === "kept").length;
+  const target = (fresh[0] || clips[0])?.video || video;  // review starts where there is something left to decide
+  const home = `#/video/${target.id}`;
+  node.querySelector(".video-link").href = home;
+  node.querySelector(".group-thumb").href = home;
+  const review = node.querySelector(".group-review");
+  review.href = home; review.hidden = !clips.length;
+  review.textContent = fresh.length ? `Review ${fresh.length} new` : "Review clips";
+  node.querySelector(".video-name").textContent = stream ? streamTitle(video.title) : video.title.replace(/[?&]si=[\w-]+/, "");
+  node.querySelector(".video-sub").textContent = (stream ? [video.channel, plural(members.length, "capture")]
+    : [video.channel, video.duration ? clock(video.duration) : "", video.shape]).filter(Boolean).join(" · ");
+  thumb(node, video, clips);
+  const best = [...clips].sort((a, b) => (a.status === "discarded") - (b.status === "discarded") || b.score - a.score);
   const shown = best.length > MAX_CARDS ? best.slice(0, MAX_CARDS - 1) : best;
-  node.querySelector(".clip-cards").replaceChildren(...shown.map((c) => clipCard(video, c)),
-    ...(best.length > shown.length ? [moreCard(video, best.length - shown.length)] : []));
+  node.querySelector(".clip-cards").replaceChildren(...shown.map((c) => clipCard(c, stream)),
+    ...(best.length > shown.length ? [moreCard(home, best.length - shown.length)] : []));
+
   const stateEl = node.querySelector(".video-state");
-  if (video.stage === "failed") {
-    stateEl.textContent = "Stopped: open it to see why"; stateEl.classList.add("is-failed");
-  } else if (video.stage === "ready") {
-    stateEl.textContent = `${video.clip_count} clip${video.clip_count === 1 ? "" : "s"}${video.kept ? ` · ${video.kept} kept` : ""}`;
-  } else if (!video.job) {
-    stateEl.textContent = "Stopped: open it to try again"; stateEl.classList.add("is-failed");
+  const watching = members.find((m) => m.watching), busy = members.find((m) => m.job), failed = members.find((m) => m.stage === "failed" || (m.stage !== "ready" && !m.job));
+  if (watching) {
+    stateEl.textContent = watching.watching; stateEl.classList.add("is-busy");
+  } else if (busy) {
+    stateEl.textContent = busy.stage === "new" || busy.stage === "queued" ? "Waiting…" : `${busy.stage}…`; stateEl.classList.add("is-busy");
+  } else if (failed && !clips.length) {
+    stateEl.textContent = failed.stage === "failed" ? "Stopped: open it to see why" : "Stopped: open it to try again"; stateEl.classList.add("is-failed");
   } else {
-    stateEl.textContent = video.stage === "new" || video.stage === "queued" ? "Waiting…" : `${video.stage}…`;
-    stateEl.classList.add("is-busy");
+    stateEl.textContent = [plural(clips.length, "clip"), fresh.length && clips.length > fresh.length ? `${fresh.length} new` : "", kept ? `${kept} kept` : ""]
+      .filter(Boolean).join(" · ");
   }
-  const watch = node.querySelector(".video-watch");
-  watch.dataset.id = video.id;
-  if (video.watching) {
-    stateEl.textContent = video.watching; stateEl.className = "video-state is-busy";
-    watch.textContent = "Stop watching"; watch.dataset.action = "stop"; watch.hidden = false;
-  } else if (video.live && video.stage === "ready") {
-    watch.textContent = "Watch chat"; watch.dataset.action = "start"; watch.hidden = false;
+  const watch = node.querySelector(".video-watch"), live = members.find((m) => m.live && m.stage === "ready");
+  if (watching) {
+    Object.assign(watch.dataset, { id: watching.id, action: "stop" }); watch.textContent = "Stop watching"; watch.hidden = false;
+  } else if (live) {
+    Object.assign(watch.dataset, { id: live.id, action: "start" }); watch.textContent = "Watch chat"; watch.hidden = false;
   }
-  const del = node.querySelector(".video-delete");
-  del.dataset.id = video.id;
-  del.dataset.title = video.title;
-  del.setAttribute("aria-label", `Delete ${video.title}`);
-  del.title = "Delete video and its clips";
-  del.hidden = Boolean(video.job || video.watching);
+  const del = node.querySelector(".video-delete"), title = stream ? streamTitle(video.title) : video.title;
+  del.dataset.ids = members.map((m) => m.id).join(",");
+  del.dataset.title = stream ? `${title}" (${plural(members.length, "capture")}` : title;
+  del.setAttribute("aria-label", `Delete ${title}`);
+  del.title = stream ? "Delete every capture of this stream and their clips" : "Delete video and its clips";
+  del.hidden = members.some((m) => m.job || m.watching);
   return node;
 }
 
@@ -258,5 +285,8 @@ async function deleteVideo(event) {
   const button = event.target.closest(".video-delete");
   if (!button) return;
   if (!confirm(`Delete "${button.dataset.title}" and all its clips? This cannot be undone.`)) return;
-  try { await api(`/api/videos/${button.dataset.id}`, "DELETE"); await refresh(); } catch (error) { showAlert(error.message); }
+  try {
+    for (const id of button.dataset.ids.split(",")) await api(`/api/videos/${id}`, "DELETE");
+  } catch (error) { showAlert(error.message); }
+  await refresh();
 }

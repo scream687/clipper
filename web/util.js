@@ -49,3 +49,9 @@ export async function copyText(button, text) {
 }
 
 export function wait(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+const YOUTUBE_ID = /(?:[?&]v=|youtu\.be\/|\/live\/|\/shorts\/)([\w-]{11})/;
+/** The 11-character YouTube id in a watch, youtu.be, live or shorts link; null for anything else. */
+export const youtubeId = (url) => (url && YOUTUBE_ID.exec(url)?.[1]) || null;
+/** A stream capture's title without its "2026-11-18 23:41 · chat hype …" suffix. */
+export const streamTitle = (title) => title.replace(/\s+\d{4}-\d{2}-\d{2} \d{2}:\d{2}\b.*$/, "").replace(/[?&]si=[\w-]+/, "");

@@ -1,6 +1,6 @@
 // One video: progress while it is analysed, then the review feed: a player and the clips to keep or drop.
 
-import { api, clock, el, showAlert } from "./util.js";
+import { api, clock, el, showAlert, streamTitle, youtubeId } from "./util.js";
 import { Preview } from "./preview.js";
 
 const POLL_MS = 1500;
@@ -126,7 +126,26 @@ function showTally() {
   const left = review.clips.length - kept - dropped;
   el("review-tally").textContent = `${review.clips.length} clips · ${kept} kept · ${dropped} dropped${left ? ` · ${left} to review` : " · all reviewed"}`;
   el("zip-export").textContent = kept ? `Export ${kept} kept clip${kept === 1 ? "" : "s"}` : `Export all ${review.clips.length - dropped} as zip`;
-  el("zip-export").className = left ? "quiet-button" : "solid-button";  // Keep is the one primary until the review is done
+  el("zip-export").className = "quiet-button";  // Keep is the one primary until the review is done; then Next, or this
+  el("review-next").hidden = true;
+  if (!left) showNext(current);
+}
+
+// All decided: the next video with clips to review, the rest of this stream first, so a night of booms is one queue.
+async function showNext(videoId) {
+  let videos;
+  try { videos = await api("/api/videos"); } catch { return; }
+  if (videoId !== current) return;  // moved on while the list loaded
+  const here = videos.find((v) => v.id === videoId), stream = here && youtubeId(here.url);
+  const open = videos.filter((v) => v.id !== videoId && v.clips.some((c) => c.status === "new"));
+  const next = open.find((v) => stream && youtubeId(v.url) === stream) || open[0];
+  const link = el("review-next");
+  link.hidden = !next;
+  el("zip-export").className = next ? "quiet-button" : "solid-button";
+  if (!next) return;
+  const left = next.clips.filter((c) => c.status === "new").length;
+  link.href = `#/video/${next.id}`;
+  link.textContent = `Next: ${left} to review in ${streamTitle(next.title)}`;
 }
 
 function wireReview() {
